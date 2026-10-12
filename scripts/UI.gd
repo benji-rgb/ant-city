@@ -15,26 +15,35 @@ signal help_toggled()
 signal sound_pressed()
 
 const ICON_DIR := "res://assets/icons/"
-const TOOL_ICONS := ["select", "dig", "nursery", "food_storage", "waste_chamber"]
+const TOOL_ICONS := ["select", "dig", "nursery", "food_storage", "waste_chamber", "build_chamber"]
 const STAT_ICONS := ["climate", "worker", "soldier", "nursery", "food"]
 const LOG_ICON_PX := 14
-const TOOL_LABELS := ["Select [1]", "Dig [2]", "Nursery [3]", "Storage [4]", "Waste [5]"]
+const TOOL_LABELS := ["Select [1]", "Dig [2]", "Nursery [3]", "Storage [4]", "Waste [5]", "Fill [6]"]
 const TOOL_HINTS := [
 	"SELECT: click an ant, brood or chamber to inspect it.",
 	"DIG: left-drag paints dig orders (must touch a tunnel / the surface). Right-drag cancels.",
 	"NURSERY: click to plan a chamber (R rotates). Deeper = steadier climate. Right-click cancels a plan.",
 	"STORAGE: click to plan a food chamber (R rotates). Holds sugar + protein.",
 	"WASTE: click to plan a waste chamber (R rotates). Cleaners carry refuse and corpses here.",
+	"FILL: drag over tunnels to pack them with soil. Red = not allowed (reason shown). Right-drag cancels.",
 ]
 const HELP_TEXT := """ANT CITY - how to play
 
 You guide a colony; the ants decide for themselves. Nothing here is a unit you command.
 
-TOOLS (keys 1-5)   Select / Dig / Nursery / Storage / Waste
+TOOLS (keys 1-6, F = Fill)   Select / Dig / Nursery / Storage / Waste / Fill
   Dig: drag over soil next to a tunnel (or the grass) to order tunnels. Right-drag cancels.
   Chambers: click to plan, workers dig it out, then it works. R rotates. Right-click cancels a plan.
+  Fill: drag over dug tunnels; workers bring soil from the mounds and pack them shut (an empty chamber
+  cell removes that chamber). Not allowed where brood/food/refuse lies, in the queen chamber, or where it
+  would cut any part of the nest off from the surface (red ghost tells why). Right-drag cancels.
 
-KEYS   Space pause   - / + speed   P pheromone trails   H climate overlay
+ORDERS [O]   Job priorities (Forage / Nurse / Dig / Clean / Guard, presets Balanced / Growth / Defense),
+  what new eggs become (Auto or your Worker : Soldier : Gyne ratio), the standing alarm order, and the
+  Nuptial flight: raise %d gynes (winged queens; costly, they don't work) and send them off to score.
+ALARM   Fight (workers help the soldiers) / Seal entrances (nothing gets in or out) / Evacuate brood (deepest).
+
+KEYS   Space pause   - / + speed   P pheromone trails   H climate overlay   O orders panel
        K save   L load   Tab or ? this help   M mute   [ ] volume   F3 debug info   Esc back to Select
 
 WHAT THE ANTS DO
@@ -47,7 +56,7 @@ WHAT THE ANTS DO
 
 DANGER   Spiders and rival scouts sometimes roam the surface and kill foragers.
   Workers that see one raise the alarm; Soldiers (made when threatened, or when food is plentiful)
-  hurry there and fight. Buttons: Soldiers Auto/Off/Max, Threats Off/Gentle/Normal.
+  hurry there and fight. The alarm banner lets you pick the response. Threats button: Off/Gentle/Normal.
 
 Click an ant, larva or chamber (Select tool) to see details in the top-right box."""
 
@@ -71,6 +80,24 @@ var save_button: Button
 var help_button: Button
 var tutorial_button: Button
 var debug_label: Label
+# v8
+var main: Node = null
+var orders_panel: Panel
+var orders_label: Label
+var prio_labels: Array[Label] = []
+var prio_plus: Array[Button] = []
+var preset_buttons: Array[Button] = []
+var summary_button: Button
+var caste_labels: Array[Label] = []
+var caste_auto_button: Button
+var standing_button: Button
+var fly_button: Button
+var alarm_panel: Panel
+var alarm_label: Label
+var alarm_buttons: Array[Button] = []
+var summary_panel: Panel
+var summary_label: Label
+var _orders_t := 0.0
 var _debug_t := 0.0
 signal tutorial_pressed()
 var _help_t := 0.0
@@ -160,7 +187,7 @@ func _build() -> void:
 	var bar := _panel(Vector2(420, 6), Vector2(566, 118))
 	var tool_group := ButtonGroup.new()
 	for i in TOOL_LABELS.size():
-		var b := _button(bar, TOOL_LABELS[i], Vector2(6 + i * 111, 6), Vector2(107, 26), true)
+		var b := _button(bar, TOOL_LABELS[i], Vector2(6 + i * 92, 6), Vector2(89, 26), true)
 		b.button_group = tool_group
 		_set_icon(b, TOOL_ICONS[i])
 		b.tooltip_text = TOOL_HINTS[i]
@@ -197,10 +224,10 @@ func _build() -> void:
 	help_b.pressed.connect(func() -> void: help_toggled.emit())
 	_set_icon(help_b, "help")
 	help_b.tooltip_text = "Show / hide the help text (Tab or ?)."
-	soldier_button = _button(bar, "Soldiers: Auto", Vector2(6, 66), Vector2(150, 26), false)
+	soldier_button = _button(bar, "Orders [O]", Vector2(6, 66), Vector2(150, 26), true)
 	soldier_button.pressed.connect(func() -> void: soldier_mode_pressed.emit())
 	_set_icon(soldier_button, "guard")
-	soldier_button.tooltip_text = "Soldier production: Auto (when threatened / food is plentiful), Off, or Max."
+	soldier_button.tooltip_text = "Workforce priorities, egg castes, alarm orders and the nuptial flight (O)."
 	threat_button = _button(bar, "Threats: Gentle", Vector2(160, 66), Vector2(150, 26), false)
 	threat_button.pressed.connect(func() -> void: threat_pressed.emit())
 	_set_icon(threat_button, "threat_spider")
@@ -264,12 +291,125 @@ func _build() -> void:
 	debug_label.add_theme_constant_override("outline_size", 3)
 	debug_label.visible = false
 
-	help_panel = _panel(Vector2(190, 140), Vector2(900, 470), 0.9)
+	_build_v8()
+	help_panel = _panel(Vector2(190, 132), Vector2(900, 560), 0.92)
 	help_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var hl := _label(help_panel, Vector2(16, 10), Vector2(870, 450), 13)
-	hl.text = HELP_TEXT
+	var hl := _label(help_panel, Vector2(16, 8), Vector2(870, 545), 12)
+	hl.text = HELP_TEXT % Config.GYNE_GOAL
 	help_panel.visible = true
 	_help_t = 25.0
+
+func _small(parent: Control, text: String, pos: Vector2, w: float, cb: Callable) -> Button:
+	var b := _button(parent, text, pos, Vector2(w, 20), false)
+	b.add_theme_font_size_override("font_size", 15 if text.length() == 1 else 11)
+	b.pressed.connect(cb)
+	return b
+
+## v8 panels: Orders (workforce / castes / standing order / flight), alarm banner, flight summary.
+func _build_v8() -> void:
+	orders_panel = _panel(Vector2(8, 130), Vector2(404, 300), 0.86)
+	orders_panel.visible = false
+	var t := _label(orders_panel, Vector2(8, 4), Vector2(390, 18), 12)
+	t.text = "WORKFORCE      priority                  wanted / now"
+	for i in Config.PRIO_JOBS.size():
+		var y := 24 + i * 22
+		var l := _label(orders_panel, Vector2(8, y + 1), Vector2(80, 18), 12)
+		l.text = Config.PRIO_JOBS[i]
+		_small(orders_panel, "-", Vector2(84, y), 22, func() -> void: main.set_prio(i, -1))
+		var v := _label(orders_panel, Vector2(110, y + 1), Vector2(170, 18), 12)
+		prio_labels.append(v)
+		prio_plus.append(_small(orders_panel, "+", Vector2(250, y), 22, func() -> void: main.set_prio(i, 1)))
+	var px := 8
+	for n in ["Balanced", "Growth", "Defense"]:
+		preset_buttons.append(_small(orders_panel, n, Vector2(px, 136), 84, func() -> void: main.apply_preset(n)))
+		px += 88
+	var t2 := _label(orders_panel, Vector2(8, 160), Vector2(390, 18), 12)
+	t2.text = "NEW EGGS BECOME"
+	caste_auto_button = _small(orders_panel, "Auto", Vector2(150, 158), 110, func() -> void: main.toggle_caste_auto())
+	for i in 3:
+		var x := 8 + i * 132
+		var l := _label(orders_panel, Vector2(x, 184), Vector2(128, 18), 11)
+		caste_labels.append(l)
+		_small(orders_panel, "-", Vector2(x, 204), 26, func() -> void: main.set_caste_w(i, -1))
+		_small(orders_panel, "+", Vector2(x + 30, 204), 26, func() -> void: main.set_caste_w(i, 1))
+	standing_button = _small(orders_panel, "Standing alarm order: Fight", Vector2(8, 234), 260, func() -> void: main.cycle_standing_order())
+	standing_button.tooltip_text = "What the colony does when an alarm starts (you can still change it on the alarm banner)."
+	fly_button = _small(orders_panel, "Nuptial flight", Vector2(8, 262), 388, func() -> void: main.nuptial_flight())
+	fly_button.tooltip_text = "Needs %d gynes. They fly off to found new colonies: a score milestone." % Config.GYNE_GOAL
+	orders_label = _label(orders_panel, Vector2(276, 236), Vector2(124, 18), 11)
+
+	alarm_panel = _panel(Vector2(440, 130), Vector2(400, 62), 0.9)
+	(alarm_panel.get_theme_stylebox("panel") as StyleBoxFlat).border_color = Color(1.0, 0.3, 0.2)
+	(alarm_panel.get_theme_stylebox("panel") as StyleBoxFlat).set_border_width_all(2)
+	alarm_label = _label(alarm_panel, Vector2(10, 4), Vector2(380, 18), 13)
+	alarm_label.add_theme_color_override("font_color", Color(1.0, 0.55, 0.45))
+	for i in Config.ORDER_NAMES.size():
+		var b := _button(alarm_panel, Config.ORDER_NAMES[i], Vector2(8 + i * 129, 28), Vector2(125, 26), true)
+		b.pressed.connect(func() -> void: main.alarm_order(i))
+		alarm_buttons.append(b)
+	alarm_buttons[0].tooltip_text = "Soldiers and nearby workers attack the threat."
+	alarm_buttons[1].tooltip_text = "Close the entrances: threats can't get in, foraging stops, food waits outside."
+	alarm_buttons[2].tooltip_text = "Nurses carry brood to the deepest nursery."
+	alarm_panel.visible = false
+
+	summary_panel = _panel(Vector2(390, 180), Vector2(500, 320), 0.95)
+	summary_label = _label(summary_panel, Vector2(20, 14), Vector2(460, 250), 14)
+	summary_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	summary_button = _button(summary_panel, "Continue", Vector2(190, 276), Vector2(120, 30), false)
+	summary_button.pressed.connect(func() -> void: main.close_summary())
+	summary_panel.visible = false
+
+func toggle_orders() -> void:
+	orders_panel.visible = not orders_panel.visible
+	soldier_button.set_pressed_no_signal(orders_panel.visible)
+	_orders_t = 0.0
+
+func show_summary(d: Dictionary) -> void:
+	summary_label.text = "NUPTIAL FLIGHT #%d  -  Day %d\n\n%d young queens took to the air to found new colonies.\n\nWorkers %d   Soldiers %d\nAnts raised %d   Food brought in %.0f   Cells dug %d\nGynes flown so far %d\n\nSCORE %d\n\nThe colony lives on - raise more gynes for the next flight." % [
+		d["flights"], d["day"], d["gynes"], d["workers"], d["soldiers"], d["born"], d["foraged"], d["dug"], d["gynes_total"], d["score"]]
+	summary_panel.visible = true
+
+func _refresh_v8(colony: Colony) -> void:
+	# alarm banner (every frame: cheap)
+	var on := colony.threat_active()
+	alarm_panel.visible = on
+	if on:
+		var what := "a predator on the surface" if not colony.threats.is_empty() else "alarm pheromone"
+		if colony.intruder_count() > 0:
+			what = "an intruder in the nest"
+		alarm_label.text = "ALARM - %s!   Response:" % what
+		var cur := colony.current_order()
+		for i in alarm_buttons.size():
+			alarm_buttons[i].set_pressed_no_signal(i == cur)
+	if not orders_panel.visible:
+		return
+	_orders_t -= get_process_delta_time()
+	if _orders_t > 0.0:
+		return
+	_orders_t = 0.25
+	var tg := colony.job_targets()
+	var ac := colony.job_actual()
+	var bars := ["off", "low", "normal", "high", "top"]
+	for i in prio_labels.size():
+		var lv := int(colony.work_prio[i])
+		var bar := "#".repeat(lv) + ".".repeat(4 - lv)
+		if i < 4:
+			prio_labels[i].text = "%s %-6s     %2d / %2d" % [bar, bars[lv], tg[i], ac[i]]
+		else:
+			prio_labels[i].text = "%s %-6s     %2d / %2d sold." % [bar, bars[lv], colony.soldier_target(), colony.soldier_count()]
+	caste_auto_button.text = "Auto (colony decides)" if not colony.caste_manual else "Manual ratio"
+	var tot := 0
+	for w in colony.caste_w:
+		tot += int(w)
+	var have := [colony.worker_count(), colony.soldier_count(), colony.gyne_count()]
+	for i in 3:
+		var pct := "auto" if not colony.caste_manual else "%d%%" % (roundi(100.0 * colony.caste_w[i] / tot) if tot > 0 else 0)
+		caste_labels[i].text = "%s %s (have %d)" % [Config.CASTE_NAMES[i], pct, have[i]]
+	standing_button.text = "Standing alarm order: %s" % Config.ORDER_NAMES[colony.standing_order]
+	orders_label.text = "Score %d" % colony.score
+	var g := colony.gyne_count()
+	fly_button.disabled = not colony.can_fly()
+	fly_button.text = ("NUPTIAL FLIGHT - send %d gynes!" % g) if colony.can_fly() else "Nuptial flight: gynes %d / %d (+%d brood)" % [g, Config.GYNE_GOAL, colony.brood_of_caste(Brood.Caste.GYNE)]
 
 func _process(delta: float) -> void:
 	if help_panel.visible and _help_t > 0.0:
@@ -312,7 +452,6 @@ func hide_help() -> void:
 	_help_t = 0.0
 
 func show_modes(colony: Colony) -> void:
-	soldier_button.text = "Soldiers: %s" % Colony.SOLDIER_MODE_NAMES[colony.soldier_mode]
 	threat_button.text = "Threats: %s" % Config.THREAT_NAMES[Config.threat_level]
 
 @warning_ignore("integer_division")
@@ -323,7 +462,7 @@ func refresh(colony: Colony, speed: float, paused: bool, info: String) -> void:
 	var soldiers := colony.soldier_count()
 	var txt := "Day %d   %d:%02d   %s    Surface %.0f C\n" % [colony.day(), t / 60, t % 60, "PAUSED" if paused else "%dx" % int(speed), Climate.temp(Config.SURFACE_ROW + 1, colony.time)]
 	txt += "Workers %d (Nurse %d | Dig %d | Forage %d | Clean %d | Idle %d)\n" % [colony.worker_count(), tc[Ant.Task.NURSE], tc[Ant.Task.DIG], tc[Ant.Task.FORAGE], tc[Ant.Task.CLEAN], tc[Ant.Task.IDLE]]
-	txt += "Soldiers %d (+%d brood, goal %d)   Hygiene %d%%\n" % [soldiers, colony.soldier_brood, colony.soldier_target(), roundi(colony.hygiene * 100.0)]
+	txt += "Soldiers %d (+%d brood, goal %d)  Gynes %d/%d  Hygiene %d%%\n" % [soldiers, colony.soldier_brood, colony.soldier_target(), colony.gyne_count(), Config.GYNE_GOAL, roundi(colony.hygiene * 100.0)]
 	txt += "Brood %d/%d (Eggs %d | Larvae %d | Pupae %d)\n" % [colony.brood.size(), colony.nursery_capacity, bc[0], bc[1], bc[2]]
 	txt += "Sugar %.1f   Protein %.1f   / %.0f   Piles %d\n" % [colony.sugar_stock, colony.protein_stock, colony.food_capacity, colony.active_food_count()]
 	var warn := ""
@@ -347,9 +486,10 @@ func refresh(colony: Colony, speed: float, paused: bool, info: String) -> void:
 	if warn != "":
 		txt += warn
 	else:
-		txt += "Born %d  Died %d  Dig orders %d  Threats %d" % [colony.total_born, colony.total_deaths, colony.dig_tasks.size(), colony.threats.size()]
+		txt += "Born %d  Died %d  Dig %d  Fill %d  Score %d" % [colony.total_born, colony.total_deaths, colony.dig_tasks.size(), colony.fill_tasks.size(), colony.score]
 	stats_label.text = txt
 	info_label.text = info
+	_refresh_v8(colony)
 	var lines := colony.events.slice(maxi(0, colony.events.size() - 6))
 	var bb := PackedStringArray()
 	for l in lines:

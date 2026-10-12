@@ -1,4 +1,20 @@
-# Ant City — TODO / roadmap (after v7)
+# Ant City — TODO / roadmap (after v8)
+
+## Done in v8
+- [x] Orders panel: workforce priorities + presets with wanted/now counts, age efficiency.
+- [x] Caste investment (Auto or Worker:Soldier:Gyne ratio), gynes, nuptial flight with score + summary.
+- [x] Alarm banner with Fight / Seal entrances / Evacuate brood + standing order.
+- [x] Sugar balance: per-type caps, sugar-first comfort, scarce-type priority, more sugar piles.
+- [x] Fill tool with connectivity / content checks, red reason ghost, leaf-first packing, save/load, tests, tutorial.
+
+## Still open after v8 (honest)
+- [ ] "Ant standing in the cell -> filler waits" is implemented but not covered by its own assertion.
+- [ ] The Fight order's effect (workers joining) is not measured by a dedicated test; only the banner / order switch is.
+- [ ] Filling a chamber cell removes the whole chamber (rect rooms can't shrink); the other cells stay open tunnel.
+- [ ] Queen chamber cells can never be filled (simpler than "all but the last cells").
+- [ ] Gyne Auto mode is conservative (needs 30+ workers and plentiful food); score has no high-score table.
+- [ ] Orders panel +/- buttons are small; tested at 1280x720 only.
+
 
 ## Done in v7
 - [x] WebGL audit: polygon buffer churn removed, soil uploads chunked, broken context-lost handler fixed + auto-reload/resume, autosave 60 s + tab hide, F3 readout, HiDPI/MSAA off.

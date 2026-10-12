@@ -78,7 +78,7 @@ static func to_dict(col: Colony) -> Dictionary:
 		if a.carrying_waste and a.waste_item != null:
 			waste.append([a.cell.x, a.cell.y, a.waste_item.kind, a.waste_item.units])
 		ants.append({"cell": _v2(a.cell), "age": a.age, "life": a.lifespan, "hp": a.hp, "hunger": a.hunger,
-			"task": a.task, "caste": a.caste, "cf": a.carry_food, "ct": a.carry_type, "cn": a.carry_nurse, "soil": a.soil, "out": a.out_t})
+			"task": a.task, "caste": a.caste, "cf": a.carry_food, "ct": a.carry_type, "cn": a.carry_nurse, "soil": a.soil, "out": a.out_t, "fs": a.fill_soil})
 	d["ants"] = ants
 	d["waste"] = waste
 	d["queen"] = {"cell": _v2(col.queen.cell), "hunger": col.queen.hunger}
@@ -96,6 +96,13 @@ static func to_dict(col: Colony) -> Dictionary:
 	d["v5"] = {"homing_ok": col.homing_ok, "homing_fallback": col.homing_fallback, "soil_hauled": col.soil_hauled,
 		"soil_lost": col.soil_lost, "raids": col.raids, "food_stolen": col.food_stolen, "brood_stolen": col.brood_stolen,
 		"intruders_killed": col.intruders_killed, "flood_peak": col.flood_peak, "flood_deaths": col.flood_deaths}
+	var fills: Array = []
+	for t: DigTask in col.fill_tasks.values():
+		fills.append(_v2(t.cell))
+	d["v8"] = {"work_prio": col.work_prio.duplicate(), "caste_manual": col.caste_manual, "caste_w": col.caste_w.duplicate(),
+		"standing_order": col.standing_order, "active_order": col.active_order, "flights": col.flights,
+		"gynes_flown": col.gynes_flown, "score": col.score, "fills": fills, "total_filled": col.total_filled,
+		"soil_used": col.soil_used, "mound_used": col.mound_used}
 	var dig: Array = []
 	for t: DigTask in col.dig_tasks.values():
 		dig.append({"cell": _v2(t.cell), "room": room_idx.get(t.room, -1) if t.room != null else -1})
@@ -234,6 +241,7 @@ static func apply(col: Colony, d: Dictionary) -> String:
 		a.carry_type = int(ad["ct"])
 		a.carry_nurse = float(ad["cn"])
 		a.soil = int(ad.get("soil", 0))
+		a.fill_soil = int(ad.get("fs", 0))
 		a.out_t = float(ad.get("out", 0.0))
 		col.ants.append(a)
 	# surface food
@@ -275,6 +283,25 @@ static func apply(col: Colony, d: Dictionary) -> String:
 		if ri >= 0 and ri < col.rooms.size():
 			t.room = col.rooms[ri]
 		col.dig_tasks[t.cell] = t
+	# v8 (older saves: defaults)
+	var v8: Dictionary = d.get("v8", {})
+	col.work_prio = (v8.get("work_prio", [2, 2, 2, 2, 2]) as Array).map(func(x): return int(x))
+	col.caste_manual = bool(v8.get("caste_manual", false))
+	col.caste_w = (v8.get("caste_w", [6, 2, 0]) as Array).map(func(x): return int(x))
+	col.standing_order = int(v8.get("standing_order", 0))
+	col.active_order = int(v8.get("active_order", -1))
+	col.flights = int(v8.get("flights", 0))
+	col.gynes_flown = int(v8.get("gynes_flown", 0))
+	col.score = int(v8.get("score", 0))
+	col.total_filled = int(v8.get("total_filled", 0))
+	col.soil_used = int(v8.get("soil_used", 0))
+	col.mound_used = int(v8.get("mound_used", 0))
+	col.fill_tasks.clear()
+	for fc in v8.get("fills", []):
+		var ft := DigTask.new()
+		ft.cell = _c(fc)
+		if col.grid.get_cell(ft.cell) == SoilGrid.Cell.TUNNEL:
+			col.fill_tasks[ft.cell] = ft
 	for w in d.get("waste", []):
 		var item := WasteItem.new()
 		item.cell = Vector2i(int(w[0]), int(w[1]))

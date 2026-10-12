@@ -199,3 +199,22 @@ Colony: `EGG_INTERVAL`, `STORAGE_PER_CELL`, `LIFESPAN_MEAN`, `DIG_TIME`, `PREF_N
   so nurses move brood out once a nursery is dug. Waste without a waste chamber goes to the surface midden (as before).
 - **Tutorial** (`Tutorial.gd`, a Control in the HUD layer): steps = [title, text, highlight, needs Next]; `_step_done()` checks dig orders,
   planned rooms of each type, the P overlay or foraged food. `poll()` is public so the self-test can drive it.
+
+## v8 additions - player decisions
+* `Colony.work_prio[5]` (0..4) -> `Config.PRIO_MULT` multiplies s_forage / s_nurse / s_dig / s_clean in `score_tasks`; Guard scales
+  `soldier_target()`. `job_targets()` (base shares x multipliers, normalised to workers) vs `job_actual()` for the HUD.
+  `age_efficiency(ant)` = 0.7 + 0.3 x age-curve for the current job, applied to walking speed and fill speed.
+* Castes: `Brood.Caste` / `Ant.Caste` = WORKER, SOLDIER, GYNE (same order). `pick_egg_caste()`: manual weights `caste_w` or Auto.
+  `Config.CASTE_PROTEIN / CASTE_SUGAR / CASTE_TIME`. Gynes: idle in the queen chamber, eat `SUGAR_RATE_GYNE`, excluded from
+  worker_count / reassign. `start_nuptial_flight()` needs `GYNE_GOAL` = 3, removes them (no corpse, no death), adds score,
+  emits `nuptial_flight(summary)` -> UI summary panel (game pauses).
+* Threat orders: `standing_order`, `active_order` (alarm banner; resets 10 s after the all-clear). `sealed()`: forage score x0.02,
+  `_decide_forage` waits inside, `Threat._try_enter` gives up. `fighting()`: surface workers within 6 cells of a threat join the
+  fight with 50 % chance (0.15 x soldier damage). `evacuating()`: `brood_q()` = depth, so relocation moves brood deepest.
+* Food: `Config.TYPE_CAP` [0.75, 0.40] per-type storage share, `FOOD_COMFORT_SHARE` [0.42, 0.22], scarce type x(1/0.15) in
+  `pick_seek_type`, `FOOD_LAYOUT` 4 sugar + 2 protein.
+* Fill: `Colony.fill_tasks` (DigTask records), `fill_error(c)`, `_connected_without(c, strict)` BFS from the entrances,
+  `claim_fill_task` (skips inner cells while outer ones are pending), `complete_fill` (re-checks, `SoilGrid.fill`, removes an emptied
+  chamber, ants routed through the cell re-plan). Ant: Purpose GET_SOIL / TO_FILL, State FILLING, `fill_soil` pellet. Soil
+  bookkeeping: dug = hauled + lost + carried + `soil_used` (mound pellets are counted in `mound_used`).
+* Save: `v8` dict (priorities, castes, orders, flights, score, fill orders, counters) + per-ant `fs`; older saves load with defaults.

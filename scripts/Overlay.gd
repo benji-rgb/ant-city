@@ -155,6 +155,7 @@ func _draw() -> void:
 	_draw_brood()
 	_draw_waste()
 	_draw_dig_orders()
+	_draw_fill_orders()
 	_draw_mounds()
 	if show_phero:
 		_text(Vector2(8, Config.FIRST_SOIL_ROW * C + 150), "TRAILS: yellow sugar, pink protein, blue home (nest), red alarm", 10, Color(1, 1, 0.8))
@@ -305,6 +306,13 @@ func _draw_mounds() -> void:
 		Art.dot(self, Vector2(cx - w * 0.3, ground - h * 0.4), 1.4, Color(0.27, 0.36, 0.17))
 		Art.dot(self, Vector2(cx + w * 0.3, ground - h * 0.3), 1.2, Color(0.25, 0.22, 0.18))
 
+func _draw_fill_orders() -> void:
+	for t: DigTask in colony.fill_tasks.values():
+		var cr := _cell_rect(t.cell)
+		draw_rect(cr.grow(-2), Color(0.62, 0.46, 0.30, 0.25 + 0.6 * t.progress), true)
+		draw_rect(cr.grow(-2), Color(0.85, 0.65, 0.40, 0.95) if t.claimed_by != null else Color(0.75, 0.55, 0.35, 0.6), false, 1.0)
+		draw_line(cr.position + Vector2(3, cr.size.y - 3), cr.end - Vector2(3, cr.size.y - 3), Color(0.3, 0.2, 0.1, 0.8), 1.0)
+
 func _draw_dig_orders() -> void:
 	for t: DigTask in colony.dig_tasks.values():
 		var cr := _cell_rect(t.cell)
@@ -376,6 +384,8 @@ func _draw_top() -> void:
 		var ok: bool = main.hover_ok
 		draw_rect(cr, Color(1.0, 0.8, 0.3, 0.25) if ok else Color(1.0, 0.3, 0.2, 0.18), true)
 		draw_rect(cr, Color(1.0, 0.85, 0.4, 0.9) if ok else Color(1.0, 0.35, 0.25, 0.7), false, 1.0)
+		if main.fill_mode and main.fill_msg != "":
+			_text(cr.position + Vector2(-4, -5), str(main.fill_msg), 11, Color(1, 1, 1) if ok else Color(1.0, 0.6, 0.55))
 
 func _draw_fx() -> void:
 	for e in colony.fx:

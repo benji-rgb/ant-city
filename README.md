@@ -1,4 +1,4 @@
-# Ant City (v7) — Godot 4 side-view ant colony simulator
+# Ant City (v8) — Godot 4 side-view ant colony simulator
 
 A cross-section ant nest. You don't control individual ants: you designate **where to dig** and **which
 chambers to build**, and the colony (queen, workers, soldiers, brood) organises itself with pheromone trails,
@@ -16,7 +16,8 @@ Targets **Godot 4.3** (GL Compatibility renderer, 1280x720). Nothing here needs 
 ## Controls
 | Input | Action |
 |---|---|
-| **1 / 2 / 3 / 4 / 5** or the buttons | Tools: Select, Dig, Nursery, Storage, **Waste** |
+| **1 / 2 / 3 / 4 / 5 / 6** (6 or **F** = Fill) or the buttons | Tools: Select, Dig, Nursery, Storage, Waste, **Fill** |
+| Fill tool: **left-drag** / **right-drag** | Paint / cancel fill orders on dug tunnels (red ghost + reason if not allowed) |
 | Dig tool: **left-drag** | Paint dig orders (soil cell must touch a tunnel / the surface, or another order) |
 | Dig tool: **right-drag** | Cancel dig orders |
 | Nursery / Storage / Waste: **click** | Designate a 5x3 chamber (ghost = green if valid, red + reason if not) |
@@ -29,7 +30,8 @@ Targets **Godot 4.3** (GL Compatibility renderer, 1280x720). Nothing here needs 
 | **H** | Climate overlay (temperature tint per depth, green cells = good for brood; hover shows the numbers) |
 | **K / L** (or the Save / Load buttons) | Save / load the colony (`user://ant_city_save.json`). L loads the newer of your save and the 2-minute autosave |
 | **Tab** or **?** | Help overlay (also shown for the first 25 s) |
-| **Soldiers: Auto / Off / Max** button | How many soldiers the queen raises |
+| **O** or **Orders** button | Orders panel: job priorities + presets, egg castes (Auto / ratio), standing alarm order, Nuptial flight |
+| Alarm banner buttons | Fight / Seal entrances / Evacuate brood while an alarm is active |
 | **Threats: Off / Gentle / Normal** button | Predator frequency (difficulty) |
 | **M** / sound button (bottom-right) | Mute / unmute (HUD shows `Sound 60% [M]` or `MUTED [M]`) |
 | **[** / **]** | Master volume -10 % / +10 % (saved in `user://settings.cfg`) |
@@ -38,6 +40,32 @@ Targets **Godot 4.3** (GL Compatibility renderer, 1280x720). Nothing here needs 
 Ant colours (marker above the ant + abdomen): pink = Nurse, orange = Dig, green = Forage, olive = Clean,
 red = Soldier (guard), grey = Idle. Carried items: yellow dot = sugar, red-pink dot = protein, pale dot = larva
 food or brood, brown dot = refuse. A red dot over a larva = it is hungry. An "x" = something died, "!" = an ant saw a predator.
+
+## New in v8 - player decisions
+* **Orders panel [O]** (replaces the old Soldiers Auto/Off/Max button):
+  * **Workforce priorities** for Forage / Nurse / Dig / Clean / Guard (levels off/low/normal/high/top = x0 / 0.5 / 1 / 1.6 / 2.5 on the
+    utility scores; Guard scales the soldier goal). Shows *wanted / now* per job. Presets **Balanced**, **Growth**, **Defense**.
+    Age polyethism still applies, and an ant doing a job its age is bad at works slower (70-100 % speed).
+  * **New eggs become**: *Auto* (old soldier logic, plus an occasional gyne in a big, well fed colony) or your
+    **Worker : Soldier : Gyne** ratio. Cost in protein 0.5 / 1.0 / 2.5 (gyne also 1 sugar); larva + pupa time x1 / 1.3 / 1.8.
+  * **Gynes** (winged young queens) don't work; they wait in the queen chamber. With **3 gynes** the **Nuptial flight** button
+    sends them off: event, score (+100 per gyne, +2 per worker), and a summary screen (Continue resumes).
+  * **Standing alarm order** (default Fight).
+* **Alarm banner** (centre top, red) whenever a threat / alarm is active: **Fight** (soldiers + nearby surface workers engage),
+  **Seal entrances** (raiders can't enter, nobody goes out to forage, foragers wait inside), **Evacuate brood** (nurses move brood
+  to the deepest nursery). The choice lasts until 10 s after the all-clear, then the standing order is used again.
+* **Sugar balance** (the day-9 "sugar 0, storages full of protein" game): per-type storage caps (sugar 75 %, protein 40 %),
+  sugar now wants a bigger comfort stock than protein (42 % vs 22 %), the scarce type strongly wins the forager's choice,
+  and 4 of 6 food piles are sugar. Headless 40-min runs, min / mean sugar v7 -> v8: seed1 5.7/27 -> 13.6/43, seed4 14/33 -> 23/47,
+  seed7 20/33 -> 18/42, founding+tutorial 0.0/20 -> 4.5/26.
+* **Fill tool [6] or [F]**: drag over dug tunnel cells; workers fetch a soil pellet (surface mound first, else topsoil; a digger's
+  own pellet is used too), stand next to the cell and pack it in ~2.5 s (waiting while any ant stands in it). Rejected (red ghost
+  with the reason): not a tunnel, brood / refuse / dropped food in the cell, queen chamber, planned chambers, storage with food,
+  nursery with brood, non-empty waste chamber, and anything that would cut any tunnel, chamber or ant off from the surface
+  (flood fill from the entrances, pending fill cells count as filled). Several pending cells are packed leaf-first so nothing is
+  ever stranded. Filling a cell of an (empty) chamber removes that chamber. Right-drag cancels. Saved / loaded.
+* Tutorial: two new steps (Orders, Alarms + Fill), still skippable. HUD shows gynes, fill orders and score.
+* WebGL rules kept: the new HUD is Controls; new world drawing is rects / lines / text only (gyne wings are 3 lines each).
 
 ## New in v7 - "WebGL context lost" investigation
 Measured in headless Chrome (ANGLE/SwiftShader, `--force-gpu-mem-available-mb=256`) with a debug page that wraps the WebGL calls
@@ -179,12 +207,14 @@ godot --headless --path . -- --selftest=1800 --seed=1
 #   options: --threats=0|1|2  --threatat=T [--threatkind=0|1]  --soldiermode=0|1|2 (auto/off/max)
 #            --foods=N (first N piles only; note piles 4-5 are protein)  --nofood  --dt=0.0333
 #            --savetest=T (save at T, keep running 40 s, load, compare)  --events  --dbgwaste
+#            --v8test (with --classic: sugar caps, fill rejections + completion, castes / gynes / flight, seal / evacuate, priorities)
+# full suite: ../suite_v8.sh (13 runs; save tests run one after another)
 # screenshots (needs a display, e.g. xvfb-run):
 xvfb-run -a godot --path . --rendering-driver opengl3 -- --shot=out.png --ffwd=420 --seed=21 --nohelp --phero=1
 #   extra: --climate=1  --threats=N  --tool=N
 # audio manager checks (forces the manager on under the dummy audio driver):
 godot --headless --path . -- --audiotest --forcesound
-# simulated mouse/keyboard UI test with screenshots (48 assertions, incl. audio / mute / volume):
+# simulated mouse/keyboard UI test with screenshots (68 assertions, incl. audio, Orders panel, Fill tool, alarm banner, nuptial flight; use --classic):
 xvfb-run -a godot --path . --rendering-driver opengl3 -- --shot=out --ffwd=60 --uitest --seed=11 --threats=0
 ```
 

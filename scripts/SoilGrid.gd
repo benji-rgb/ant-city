@@ -167,6 +167,24 @@ func dig(c: Vector2i) -> bool:
 	cell_dug.emit(c)
 	return true
 
+## v8 Fill tool: pack a dug tunnel cell back to soil (walk + A* updated, only the 3x3 area repainted).
+func fill(c: Vector2i) -> bool:
+	if not in_bounds(c) or c.y <= Config.SURFACE_ROW or get_cell(c) != Cell.TUNNEL:
+		return false
+	var i := c.y * W + c.x
+	cells[i] = Cell.SOIL
+	walk[i] = 0
+	var k := walk_idx.find(i)
+	if k >= 0:
+		walk_idx.remove_at(k)
+	astar.set_point_solid(c, true)
+	_paint_cell(c)
+	for d in N4:
+		if in_bounds(c + d):
+			_paint_cell(c + d)
+	_mark_px_dirty(Rect2i((c - Vector2i.ONE) * C, Vector2i(3, 3) * C))
+	return true
+
 ## Replace the whole map (loading a save).
 func load_cells(data: PackedByteArray) -> void:
 	cells = data.duplicate()

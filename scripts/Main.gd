@@ -1,9 +1,9 @@
 extends Node2D
 ## Root: builds the world, owns tools / input / sim speed, and runs the fixed-step simulation.
 
-enum Tool { SELECT, DIG, NURSERY, STORAGE, WASTE }
+enum Tool { SELECT, DIG, NURSERY, STORAGE, WASTE, FILL }
 
-const HELP := "Keys: 1-5 tools | Space pause | -/+ speed | P trails | H climate | K save | L load | Tab or ? help | M mute | [ ] volume | F3 debug | R rotate chamber\nLeft-drag with Dig paints orders, right-drag cancels. Click an ant, larva or chamber to inspect it."
+const HELP := "Keys: 1-6 tools (F fill) | O orders | Space pause | -/+ speed | P trails | H climate | K save | L load | Tab or ? help | M mute | F3 debug | R rotate\nLeft-drag with Dig / Fill paints orders, right-drag cancels. Click an ant, larva or chamber to inspect it."
 const ROOM_TOOLS := {Tool.NURSERY: Room.Type.NURSERY, Tool.STORAGE: Room.Type.FOOD_STORAGE, Tool.WASTE: Room.Type.WASTE}
 
 var grid: SoilGrid
@@ -28,6 +28,10 @@ var ghost_ok := false
 var ghost_rect := Rect2i()
 var ghost_type: int = Room.Type.NURSERY
 var ghost_msg := ""
+var fill_mode := false
+var fill_msg := ""
+var _fill_key := Vector3i(-1, -1, -1)
+var _fill_key_t := 0.0
 var room_w := 5
 var room_h := 3
 
@@ -157,7 +161,12 @@ func _ready() -> void:
 	ui.pause_toggled.connect(toggle_pause)
 	ui.overlay_toggled.connect(toggle_phero)
 	ui.climate_toggled.connect(toggle_climate)
-	ui.soldier_mode_pressed.connect(cycle_soldier_mode)
+	ui.main = self
+	ui.soldier_mode_pressed.connect(toggle_orders)
+	colony.nuptial_flight.connect(func(d: Dictionary) -> void:
+		ui.show_summary(d)
+		if not paused:
+			toggle_pause())
 	ui.threat_pressed.connect(cycle_threat_level)
 	ui.save_pressed.connect(save_game)
 	ui.load_pressed.connect(load_game)
@@ -286,6 +295,50 @@ func cycle_soldier_mode() -> void:
 	ui.show_modes(colony)
 	colony.log_event("Soldier production: %s." % Colony.SOLDIER_MODE_NAMES[colony.soldier_mode], "guard")
 
+# ------------------------------------------------------------------ v8 player orders
+func toggle_orders() -> void:
+	_click()
+	ui.toggle_orders()
+
+func set_prio(job: int, d: int) -> void:
+	_click()
+	colony.work_prio[job] = clampi(int(colony.work_prio[job]) + d, 0, 4)
+	colony.refresh_now()
+
+func apply_preset(n: String) -> void:
+	_click()
+	colony.work_prio = (Config.PRIO_PRESETS[n] as Array).duplicate()
+	colony.refresh_now()
+	colony.log_event("Workforce preset: %s." % n, "worker")
+
+func toggle_caste_auto() -> void:
+	_click()
+	colony.caste_manual = not colony.caste_manual
+	colony.log_event("New eggs: %s." % ("your ratio" if colony.caste_manual else "Auto"), "nursery")
+
+func set_caste_w(i: int, d: int) -> void:
+	_click()
+	colony.caste_manual = true
+	colony.caste_w[i] = clampi(int(colony.caste_w[i]) + d, 0, 10)
+
+func cycle_standing_order() -> void:
+	_click()
+	colony.standing_order = (colony.standing_order + 1) % Config.ORDER_NAMES.size()
+
+func alarm_order(o: int) -> void:
+	_click()
+	colony.set_alarm_order(o)
+
+func nuptial_flight() -> void:
+	_click()
+	colony.start_nuptial_flight()
+
+func close_summary() -> void:
+	_click()
+	ui.summary_panel.visible = false
+	if paused:
+		toggle_pause()
+
 func cycle_threat_level() -> void:
 	_click()
 	Config.threat_level = (Config.threat_level + 1) % Config.THREAT_NAMES.size()
@@ -344,6 +397,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_3: set_tool(Tool.NURSERY)
 			KEY_4: set_tool(Tool.STORAGE)
 			KEY_5: set_tool(Tool.WASTE)
+			KEY_6, KEY_F: set_tool(Tool.FILL)
+			KEY_O: toggle_orders()
 			KEY_ESCAPE: set_tool(Tool.SELECT)
 			KEY_R, KEY_T:
 				var tmp := room_w
@@ -370,10 +425,10 @@ func _unhandled_input(event: InputEvent) -> void:
 				_last_cell = Vector2i(-1, -1)
 	elif event is InputEventMouseMotion:
 		var c := SoilGrid.world_to_cell(_mouse_pos())
-		if _drag and tool == Tool.DIG:
+		if _drag and (tool == Tool.DIG or tool == Tool.FILL):
 			_paint_line(_last_cell, c, false)
 			_last_cell = c
-		elif _drag_cancel and tool == Tool.DIG:
+		elif _drag_cancel and (tool == Tool.DIG or tool == Tool.FILL):
 			_paint_line(_last_cell, c, true)
 			_last_cell = c
 
@@ -385,6 +440,10 @@ func _on_left_press(c: Vector2i) -> void:
 			_drag = true
 			_last_cell = c
 			colony.add_dig_order(c)
+		Tool.FILL:
+			_drag = true
+			_last_cell = c
+			colony.add_fill_order(c)
 		Tool.NURSERY, Tool.STORAGE, Tool.WASTE:
 			var type: int = ROOM_TOOLS[tool]
 			var rect := _ghost_rect_for(c)
@@ -393,10 +452,13 @@ func _on_left_press(c: Vector2i) -> void:
 				_click()
 
 func _on_right_press(c: Vector2i) -> void:
-	if tool == Tool.DIG:
+	if tool == Tool.DIG or tool == Tool.FILL:
 		_drag_cancel = true
 		_last_cell = c
-		colony.cancel_dig_order(c)
+		if tool == Tool.FILL:
+			colony.cancel_fill_order(c)
+		else:
+			colony.cancel_dig_order(c)
 		return
 	var r := colony.room_at(c)
 	if r != null and not r.active:
@@ -411,7 +473,12 @@ func _paint_line(a: Vector2i, b: Vector2i, cancel: bool) -> void:
 	for i in range(steps + 1):
 		var t := float(i) / float(maxi(steps, 1))
 		var c := Vector2i(roundi(lerpf(a.x, b.x, t)), roundi(lerpf(a.y, b.y, t)))
-		if cancel:
+		if tool == Tool.FILL:
+			if cancel:
+				colony.cancel_fill_order(c)
+			else:
+				colony.add_fill_order(c)
+		elif cancel:
 			colony.cancel_dig_order(c)
 		else:
 			colony.add_dig_order(c)
@@ -444,8 +511,23 @@ func _update_cursor() -> void:
 	var mp := _mouse_pos()
 	var inside := Rect2(Vector2.ZERO, Config.SCREEN).has_point(mp)
 	hover_cell = SoilGrid.world_to_cell(mp)
-	hover_visible = inside and tool == Tool.DIG
-	hover_ok = colony.can_order_dig(hover_cell) or colony.dig_tasks.has(hover_cell)
+	hover_visible = inside and (tool == Tool.DIG or tool == Tool.FILL)
+	fill_mode = tool == Tool.FILL
+	if fill_mode:
+		if colony.fill_tasks.has(hover_cell):
+			hover_ok = true
+			fill_msg = "Fill order (right-drag cancels)"
+		else:
+			var key := Vector3i(hover_cell.x, hover_cell.y, colony.fill_tasks.size() * 7919 + colony.grid.walk_idx.size())
+			if key != _fill_key or colony.time - _fill_key_t > 0.5:
+				_fill_key = key
+				_fill_key_t = colony.time
+				fill_msg = colony.fill_error(hover_cell)
+			hover_ok = fill_msg == ""
+			if hover_ok:
+				fill_msg = "Fill - click / drag"
+	else:
+		hover_ok = colony.can_order_dig(hover_cell) or colony.dig_tasks.has(hover_cell)
 	ghost_visible = false
 	if inside and ROOM_TOOLS.has(tool):
 		ghost_type = ROOM_TOOLS[tool]

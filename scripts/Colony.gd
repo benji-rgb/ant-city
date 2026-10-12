@@ -22,6 +22,10 @@ var brood: Array[Brood] = []
 var foods: Array[FoodSource] = []
 var threats: Array[Threat] = []
 var dig_tasks: Dictionary = {}          # Vector2i -> DigTask
+var fill_tasks: Dictionary = {}         # v8: Vector2i -> DigTask (fill orders: tunnel -> soil)
+var total_filled := 0
+var soil_used := 0                      # dug pellets packed back into filled cells (soil bookkeeping)
+var mound_used := 0
 var waste_items: Array[WasteItem] = []
 var dropped: Dictionary = {}            # Vector3i(x, y, food type) -> amount lying on the floor
 var mounds: Dictionary = {}             # entrance column -> excavated soil pellets (visual)
@@ -38,6 +42,17 @@ var food_stock := 0.0                   # sugar + protein
 var food_capacity := 0.0
 var lay_timer := 6.0
 var soldier_mode: int = SoldierMode.AUTO
+# v8 player decisions
+var work_prio: Array = [2, 2, 2, 2, 2]     # Forage, Nurse, Dig, Clean, Guard (0..4)
+var caste_manual := false                   # false = Auto (old soldier logic + gynes in big colonies)
+var caste_w: Array = [6, 2, 0]              # manual weights: worker, soldier, gyne (0..10)
+var standing_order := 0                     # Config.ORDER_NAMES
+var active_order := -1                      # chosen during the current alarm (-1 = use the standing order)
+var _calm_t := 0.0
+var flights := 0
+var gynes_flown := 0
+var score := 0
+signal nuptial_flight(summary: Dictionary)
 var hygiene := 1.0
 var next_uid := 1
 
@@ -135,8 +150,8 @@ func setup(g: SoilGrid) -> void:
 	else:
 		for r in rooms:
 			if r.type == Room.Type.FOOD_STORAGE:
-				r.sugar = minf(Config.START_SUGAR, r.capacity() * Config.TYPE_CAP_FRAC)
-				r.protein = minf(Config.START_PROTEIN, r.capacity() * Config.TYPE_CAP_FRAC)
+				r.sugar = minf(Config.START_SUGAR, r.capacity() * Config.type_cap(0))
+				r.protein = minf(Config.START_PROTEIN, r.capacity() * Config.type_cap(1))
 				break
 	_recount_food()
 	_refresh_climate()
@@ -246,6 +261,7 @@ func sim_step(dt: float) -> void:
 	alarm.step(dt)
 	home.step(dt)
 	_step_rain(dt)
+	_step_orders(dt)
 	for f in foods:
 		f.step(dt)
 	for a in ants.duplicate():
@@ -275,8 +291,9 @@ func sim_step(dt: float) -> void:
 
 func _consume(dt: float) -> void:
 	var soldiers := soldier_count()
-	var workers := ants.size() - soldiers
-	var want := (workers * Config.SUGAR_RATE_WORKER + soldiers * Config.SUGAR_RATE_SOLDIER + Config.SUGAR_RATE_QUEEN) * dt
+	var gynes := gyne_count()
+	var workers := ants.size() - soldiers - gynes
+	var want := (workers * Config.SUGAR_RATE_WORKER + soldiers * Config.SUGAR_RATE_SOLDIER + gynes * Config.SUGAR_RATE_GYNE + Config.SUGAR_RATE_QUEEN) * dt
 	take_food(want, Config.Food.SUGAR, Vector2i(-1, -1))
 
 func _step_laying(dt: float) -> void:
@@ -284,16 +301,19 @@ func _step_laying(dt: float) -> void:
 	lay_timer -= dt * mult
 	if lay_timer > 0.0:
 		return
-	var soldier := want_soldier_egg()
-	var cost := Config.SOLDIER_EGG_PROTEIN_COST if soldier else Config.EGG_PROTEIN_COST
-	if protein_stock < maxf(Config.LAY_PROTEIN_MIN, cost) or sugar_stock <= 0.01 or queen.hunger >= 0.9:
+	var caste := pick_egg_caste()
+	var cost: float = Config.CASTE_PROTEIN[caste]
+	var scost: float = Config.CASTE_SUGAR[caste]
+	if protein_stock < maxf(Config.LAY_PROTEIN_MIN, cost) or sugar_stock <= 0.01 + scost or queen.hunger >= 0.9:
 		return
 	if free_nursery_slots() - loose_brood_count() <= 0:
 		return
 	var b := Brood.new()
 	b.uid = next_uid
 	next_uid += 1
-	b.caste = Brood.Caste.SOLDIER if soldier else Brood.Caste.WORKER
+	b.caste = caste
+	if scost > 0.0:
+		take_food(scost, Config.Food.SUGAR, Vector2i(-1, -1))
 	b.loose_cell = queen_room.random_cell()
 	b.fed = 0.8
 	brood.append(b)
@@ -346,19 +366,21 @@ func _step_brood(b: Brood, dt: float) -> void:
 				if b.fed < 0.25:
 					rate = 0.35
 			b.t += dt * rate * m
-			if b.t >= Config.LARVA_TIME:
+			if b.t >= Config.LARVA_TIME * Config.CASTE_TIME[b.caste]:
 				b.stage = Brood.Stage.PUPA
 				b.t = 0.0
 				b.claimed_by = null
 		Brood.Stage.PUPA:
 			b.t += dt * m
-			if b.t >= Config.PUPA_TIME and not b.in_transit and ants.size() < Config.MAX_WORKERS:
+			if b.t >= Config.PUPA_TIME * Config.CASTE_TIME[b.caste] and not b.in_transit and ants.size() < Config.MAX_WORKERS:
 				var c := b.cell()
 				var caste := b.caste
 				_remove_brood(b, false)
-				var a := _spawn_ant(c, Ant.Caste.SOLDIER if caste == Brood.Caste.SOLDIER else Ant.Caste.WORKER)
+				var a := _spawn_ant(c, caste)     # Brood.Caste and Ant.Caste share the order
 				if caste == Brood.Caste.SOLDIER:
 					log_event("A soldier ant emerged.", "soldier")
+				elif caste == Brood.Caste.GYNE:
+					log_event("A winged gyne emerged (%d/%d for a nuptial flight)." % [gyne_count(), Config.GYNE_GOAL], "queen_chamber")
 				add_fx(a.position, "pop", "")
 
 func _remove_brood(b: Brood, corpse: bool) -> void:
@@ -402,6 +424,8 @@ func free_nursery_slots() -> int:
 ## Reserve a slot for `b` in the best nursery (other than `exclude`); false if there is no room.
 ## Brood placement quality: the queen chamber is only a stop-gap nursery.
 func brood_q(r: Room) -> float:
+	if evacuating():
+		return float(r.rect.get_center().y) / float(Config.GRID_H)     # deepest chamber wins
 	return r.quality - (Config.QUEEN_BROOD_PENALTY if r.type == Room.Type.QUEEN_CHAMBER else 0.0)
 
 func _reserve_dest(b: Brood, exclude: Room, min_quality: float) -> bool:
@@ -662,6 +686,180 @@ func complete_dig(t: DigTask) -> bool:
 				sfx("chamber_complete")
 	return dug
 
+# ------------------------------------------------------------------ v8 fill tool
+## Why this tunnel cell can't be filled ("" = ok). Pending fill cells count as already filled.
+func fill_error(c: Vector2i) -> String:
+	if not SoilGrid.in_bounds(c) or c.y <= Config.SURFACE_ROW:
+		return "Only dug tunnel cells can be filled"
+	if grid.get_cell(c) != SoilGrid.Cell.TUNNEL:
+		return "Only dug tunnel cells can be filled"
+	if fill_tasks.has(c):
+		return "Already marked for filling"
+	var r := room_at(c)
+	if r != null:
+		if r.type == Room.Type.QUEEN_CHAMBER:
+			return "The queen chamber can't be filled"
+		if not r.active:
+			return "A planned chamber is here - cancel it first"
+		if r.is_store() and r.sugar + r.protein > 0.05:
+			return "Storage still holds food"
+		if r.is_nursery() and (r.brood_count() > 0 or not r.reserved.is_empty()):
+			return "Nursery still holds brood"
+		if r.type == Room.Type.WASTE and r.waste > 0.05:
+			return "Waste chamber is not empty"
+	for b in brood:
+		if not b.dead and b.carried_by == null and b.cell() == c:
+			return "Brood lies here"
+	for w in waste_items:
+		if w.cell == c:
+			return "Refuse lies here"
+	for k: Vector3i in dropped.keys():
+		if Vector2i(k.x, k.y) == c:
+			return "Food lies here"
+	if not _connected_without(c):
+		return "Would cut the nest off from the surface"
+	return ""
+
+## Flood fill from the surface through tunnels, skipping `c` and pending fill cells: every
+## other tunnel cell (rooms, ants, brood) must stay reachable.
+func _connected_without(c: Vector2i, strict := false) -> bool:
+	var W := Config.GRID_W
+	var seen := PackedByteArray()
+	seen.resize(W * Config.GRID_H)
+	var q: Array[Vector2i] = []
+	for e in grid.entrances():
+		var s := Vector2i(e.x, Config.FIRST_SOIL_ROW)
+		if s != c and (strict or not fill_tasks.has(s)):
+			seen[s.y * W + s.x] = 1
+			q.append(s)
+	var n := 0
+	var qi := 0
+	while qi < q.size():
+		var p := q[qi]
+		qi += 1
+		n += 1
+		for d in SoilGrid.N4:
+			var o: Vector2i = p + d
+			if not SoilGrid.in_bounds(o) or o.y <= Config.SURFACE_ROW or seen[o.y * W + o.x] == 1:
+				continue
+			if grid.get_cell(o) != SoilGrid.Cell.TUNNEL or o == c or (fill_tasks.has(o) and not strict):
+				continue
+			seen[o.y * W + o.x] = 1
+			q.append(o)
+	var total := 0
+	for i in grid.walk_idx:
+		if i / W > Config.SURFACE_ROW:
+			var cc := Vector2i(i % W, i / W)
+			if cc != c and (strict or not fill_tasks.has(cc)):
+				total += 1
+				if seen[i] == 0:
+					return false
+	return n >= total
+
+func add_fill_order(c: Vector2i) -> bool:
+	if fill_error(c) != "":
+		return false
+	var t := DigTask.new()
+	t.cell = c
+	fill_tasks[c] = t
+	return true
+
+func cancel_fill_order(c: Vector2i) -> bool:
+	if not fill_tasks.has(c):
+		return false
+	var t: DigTask = fill_tasks[c]
+	if t.claimed_by != null and is_instance_valid(t.claimed_by):
+		(t.claimed_by as Ant).abandon_fill()
+	t.claimed_by = null
+	fill_tasks.erase(c)
+	return true
+
+func claim_fill_task(a: Ant) -> DigTask:
+	var best: DigTask = null
+	var best_d := 1 << 30
+	for t: DigTask in fill_tasks.values():
+		if t.claimed_by != null or t.blocked_until > time:
+			continue
+		var d := absi(t.cell.x - a.cell.x) + absi(t.cell.y - a.cell.y)
+		if d < best_d:
+			best_d = d
+			best = t
+	if best != null and fill_tasks.size() > 1 and not _connected_without(best.cell, true):
+		best.blocked_until = time + 3.0      # an inner cell: wait until the cells behind it are packed
+		return null
+	if best != null:
+		best.claimed_by = a
+	return best
+
+## Open neighbour of a fill cell to stand on (not another pending fill cell).
+func fill_access_cell(target: Vector2i, from: Vector2i) -> Vector2i:
+	var best := Vector2i(-1, -1)
+	var best_d := 1 << 30
+	for d in SoilGrid.N4:
+		var c := target + d
+		if grid.is_walkable(c):
+			var dd := absi(c.x - from.x) + absi(c.y - from.y) + (40 if fill_tasks.has(c) else 0)
+			if dd < best_d:
+				best_d = dd
+				best = c
+	return best
+
+## Nearest entrance column with a soil mound (x), or -1.
+func mound_for_fill(from: Vector2i) -> int:
+	var best := -1
+	var bd := 1 << 30
+	for x in mounds.keys():
+		if float(mounds[x]) >= 1.0:
+			var d := absi(int(x) - from.x)
+			if d < bd:
+				bd = d
+				best = int(x)
+	return best
+
+## Take one pellet from the mound at column x (false = mound gone: the ant scrapes topsoil instead).
+func take_mound(x: int) -> bool:
+	if float(mounds.get(x, 0.0)) >= 1.0:
+		mounds[x] = float(mounds[x]) - 1.0
+		if float(mounds[x]) < 0.5:
+			mounds.erase(x)
+		mound_used += 1
+		return true
+	return false
+
+func ant_on_cell(c: Vector2i, except: Ant) -> bool:
+	for a in ants:
+		if a != except and a.cell == c and a.state != Ant.State.DEAD:
+			return true
+	return false
+
+## The fill is done: the cell turns back to soil. Rooms containing it are removed (they were empty).
+func complete_fill(t: DigTask) -> bool:
+	t.claimed_by = null
+	# packing this cell now must not strand another pending fill cell (they are filled leaf-first)
+	if not _connected_without(t.cell, true):
+		t.blocked_until = time + 4.0
+		t.progress = 0.0
+		return false
+	fill_tasks.erase(t.cell)
+	var late := fill_error(t.cell)
+	if late != "":
+		log_event("Fill cancelled: %s." % late.to_lower(), "alert")
+		return false
+	if not grid.fill(t.cell):
+		return false
+	total_filled += 1
+	add_fx(grid.cell_center(t.cell), "dust", "")
+	sfx("dig")
+	var r := room_at(t.cell)
+	if r != null:
+		rooms.erase(r)
+		_recount_capacity()
+		log_event("%s filled in - the chamber is gone." % Room.type_name(r.type), Room.icon_name(r.type))
+	# anyone routed through the filled cell re-plans
+	for a in ants:
+		a.on_cell_filled(t.cell)
+	return true
+
 ## Hauled soil arrives on the surface: the mound beside entrance column `x` grows.
 func add_mound(x: int, n: int) -> void:
 	mounds[x] = float(mounds.get(x, 0.0)) + float(n)
@@ -701,14 +899,14 @@ func _recount_food() -> void:
 	food_stock = s + p
 
 func storage_accepts(t: int) -> bool:
-	return food_capacity > 0.0 and stock_of(t) < Config.TYPE_CAP_FRAC * food_capacity - 0.1 \
+	return food_capacity > 0.0 and stock_of(t) < Config.type_cap(t) * food_capacity - 0.1 \
 		and food_stock < food_capacity * 0.97
 
 func storage_full() -> bool:
 	return not (storage_accepts(Config.Food.SUGAR) or storage_accepts(Config.Food.PROTEIN))
 
 func deposit_food(amount: float, type: int, near: Vector2i) -> float:
-	var allow := maxf(0.0, Config.TYPE_CAP_FRAC * food_capacity - stock_of(type))
+	var allow := maxf(0.0, Config.type_cap(type) * food_capacity - stock_of(type))
 	var left := minf(amount, allow)
 	var order: Array[Room] = []
 	for r in rooms:
@@ -794,11 +992,13 @@ func active_food_count(type := -1) -> int:
 			n += 1
 	return n
 
-func comfort_of() -> float:
-	return maxf(Config.FOOD_COMFORT_MIN, Config.FOOD_COMFORT_TYPE * food_capacity)
+## Comfortable stock of one food type. v8: sugar wants more than protein, so foragers keep
+## going for sugar while protein is "enough" (the user's day-9 colony had 0 sugar, full protein).
+func comfort_of(t := 0) -> float:
+	return maxf(Config.FOOD_COMFORT_MIN, Config.FOOD_COMFORT_SHARE[t] * food_capacity)
 
 func urgency_of(t: int) -> float:
-	return clampf(1.0 - stock_of(t) / comfort_of(), 0.0, 1.0)
+	return clampf(1.0 - stock_of(t) / comfort_of(t), 0.0, 1.0)
 
 func food_urgency() -> float:
 	return maxf(urgency_of(Config.Food.SUGAR), urgency_of(Config.Food.PROTEIN))
@@ -816,6 +1016,9 @@ func pick_seek_type() -> int:
 	for t in w.size():
 		if storage_accepts(t) and active_food_count(t) > 0:
 			w[t] = Config.FOOD_TYPE_WEIGHT[t] * (0.12 + 2.0 * urgency_of(t))
+			# v8: the scarce type wins clearly (no protein runs while the colony starves for sugar)
+			if urgency_of(1 - t) > 0.6 and urgency_of(t) < 0.3:
+				w[t] *= 0.15
 			total += w[t]
 	if total <= 0.0:
 		return -1
@@ -967,10 +1170,137 @@ func soldier_target() -> int:
 		t = 3 + mini(threat_count, 4)
 	# v5: "plentiful" = both stocks comfortable (the old test, 70 % of the whole storage, was almost never true
 	# because one type may only fill 70 % of the storage and foragers slow down once comfortable)
-	var plentiful := sugar_stock >= comfort_of() and protein_stock >= 0.6 * comfort_of() and workers >= 12
+	var plentiful := sugar_stock >= 0.72 * comfort_of(0) and protein_stock >= 0.8 * comfort_of(1) and workers >= 12
 	if plentiful:
 		t = maxi(t, 1 + workers / 12)
 	return clampi(t, 0, Config.SOLDIER_MAX)
+
+func gyne_count() -> int:
+	var n := 0
+	for a in ants:
+		if a.caste == Ant.Caste.GYNE:
+			n += 1
+	return n
+
+func brood_of_caste(c: int) -> int:
+	var n := 0
+	for b in brood:
+		if b.caste == c:
+			n += 1
+	return n
+
+## v8: what the next egg becomes. Auto = old soldier rule + an occasional gyne in a big, fed colony.
+func pick_egg_caste() -> int:
+	var soldier_ok := soldier_count() + brood_of_caste(Brood.Caste.SOLDIER) < Config.SOLDIER_MAX
+	var gyne_ok := gyne_count() + brood_of_caste(Brood.Caste.GYNE) < Config.GYNE_MAX
+	if caste_manual:
+		var w: Array[float] = [float(caste_w[0]), float(caste_w[1]) if soldier_ok else 0.0, float(caste_w[2]) if gyne_ok else 0.0]
+		var tot := w[0] + w[1] + w[2]
+		if tot <= 0.0:
+			return Brood.Caste.WORKER
+		var r := randf() * tot
+		for i in 3:
+			r -= w[i]
+			if r <= 0.0:
+				return i
+		return Brood.Caste.WORKER
+	if want_soldier_egg():
+		return Brood.Caste.SOLDIER
+	if gyne_ok and worker_count() >= Config.GYNE_AUTO_WORKERS and gyne_count() + brood_of_caste(Brood.Caste.GYNE) < Config.GYNE_GOAL \
+			and sugar_stock >= 0.72 * comfort_of(0) and protein_stock >= 0.8 * comfort_of(1) and randf() < 0.15:
+		return Brood.Caste.GYNE
+	return Brood.Caste.WORKER
+
+func can_fly() -> bool:
+	return gyne_count() >= Config.GYNE_GOAL
+
+## The gynes leave for their mating flight: the colony's long-term goal (score milestone).
+func start_nuptial_flight() -> bool:
+	if not can_fly():
+		return false
+	var n := 0
+	for a in ants.duplicate():
+		if a.caste == Ant.Caste.GYNE:
+			add_fx(a.position, "pop", "")
+			ants.erase(a)
+			a.state = Ant.State.DEAD
+			a.queue_free()
+			n += 1
+	flights += 1
+	gynes_flown += n
+	score += n * 100 + worker_count() * 2
+	log_event("NUPTIAL FLIGHT! %d young queens flew off to found new colonies." % n, "queen_chamber")
+	sfx("chamber_complete")
+	nuptial_flight.emit({"day": day(), "flights": flights, "gynes": n, "gynes_total": gynes_flown, "workers": worker_count(),
+		"soldiers": soldier_count(), "born": total_born, "foraged": total_foraged, "dug": total_dug, "score": score})
+	return true
+
+# ------------------------------------------------------------------ v8 workforce
+func prio_mult(job: int) -> float:
+	return Config.PRIO_MULT[clampi(int(work_prio[job]), 0, 4)]
+
+## Wanted number of workers per job (Forage, Nurse, Dig, Clean) for the HUD.
+func job_targets() -> Array[int]:
+	var n := worker_count()
+	var base: Array[float] = [0.40 + 0.3 * food_urgency(), 0.30 if brood.size() > 0 else 0.08,
+		0.18 if not dig_tasks.is_empty() or not fill_tasks.is_empty() else 0.0, 0.12 if need_clean > 0 or hygiene < 0.95 else 0.04]
+	var w: Array[float] = []
+	var tot := 0.0
+	for i in 4:
+		w.append(base[i] * prio_mult(i))
+		tot += w[i]
+	var res: Array[int] = []
+	for i in 4:
+		res.append(roundi(n * w[i] / tot) if tot > 0.0 else 0)
+	return res
+
+func job_actual() -> Array[int]:
+	_refresh_task_counts()
+	return [task_counts[Ant.Task.FORAGE], task_counts[Ant.Task.NURSE], task_counts[Ant.Task.DIG], task_counts[Ant.Task.CLEAN]]
+
+## Age polyethism: how good this ant is at its current job (AGE_EFF_MIN..1).
+func age_efficiency(a: Ant) -> float:
+	if a.is_queen or a.caste != Ant.Caste.WORKER:
+		return 1.0
+	var pref: Array = []
+	match a.task:
+		Ant.Task.NURSE: pref = Config.PREF_NURSE
+		Ant.Task.FORAGE: pref = Config.PREF_FORAGE
+		Ant.Task.DIG: pref = Config.PREF_DIG
+		Ant.Task.CLEAN: pref = Config.PREF_CLEAN
+		_: return 1.0
+	var f := clampf(a.age / a.lifespan, 0.0, 1.0)
+	return Config.AGE_EFF_MIN + (1.0 - Config.AGE_EFF_MIN) * clampf(curve(pref, f), 0.0, 1.0)
+
+# ------------------------------------------------------------------ v8 threat orders
+func threat_active() -> bool:
+	return not threats.is_empty() or alarm_active()
+
+func current_order() -> int:
+	return active_order if active_order >= 0 else standing_order
+
+func sealed() -> bool:
+	return threat_active() and current_order() == 1
+
+func evacuating() -> bool:
+	return threat_active() and current_order() == 2
+
+func fighting() -> bool:
+	return threat_active() and current_order() == 0
+
+func set_alarm_order(o: int) -> void:
+	active_order = o
+	log_event("Alarm response: %s." % Config.ORDER_NAMES[o], "alert")
+	_refresh_needs()
+
+func _step_orders(dt: float) -> void:
+	if threat_active():
+		_calm_t = 0.0
+	else:
+		_calm_t += dt
+		if active_order >= 0 and _calm_t > 10.0:
+			active_order = -1
+			log_event("All clear - back to the standing order (%s)." % Config.ORDER_NAMES[standing_order], "alert")
 
 func want_soldier_egg() -> bool:
 	var coming := 0
@@ -1250,7 +1580,7 @@ static func curve(table: Array, x: float) -> float:
 	return table[table.size() - 1][1]
 
 func worker_count() -> int:
-	return ants.size() - soldier_count()
+	return ants.size() - soldier_count() - gyne_count()
 
 func score_tasks(a: Ant) -> Array[float]:
 	var f := clampf(a.age / a.lifespan, 0.0, 1.0)
@@ -1282,6 +1612,13 @@ func score_tasks(a: Ant) -> Array[float]:
 	var clean_avail := need_clean + (1 if a.task == Ant.Task.CLEAN else 0)
 	if clean_avail > 0:
 		s_clean = curve(Config.PREF_CLEAN, f) * (0.3 + clampf(clean_avail / 3.0, 0.0, 1.0) + (1.0 - hygiene))
+	# v8 player priorities (Forage, Nurse, Dig, Clean); level 0 = only in an emergency
+	s_for *= maxf(prio_mult(0), 0.05 if urg > 0.8 else 0.0)
+	s_nurse *= maxf(prio_mult(1), 0.0)
+	s_dig *= maxf(prio_mult(2), 0.0)
+	s_clean *= maxf(prio_mult(3), 0.05 if hygiene < Config.HYGIENE_BAD else 0.0)
+	if sealed():
+		s_for *= 0.02        # entrances sealed: nobody goes out
 	var scores: Array[float] = [0.10, s_nurse, s_dig, s_for, s_clean]
 	if a.task < scores.size():
 		scores[a.task] *= Config.TASK_HYSTERESIS
@@ -1298,7 +1635,7 @@ func choose_task(a: Ant) -> int:
 	return best
 
 func reassign(a: Ant) -> void:
-	if a.caste == Ant.Caste.SOLDIER:
+	if a.caste != Ant.Caste.WORKER:
 		return
 	_refresh_task_counts()
 	var t := choose_task(a)
@@ -1316,6 +1653,10 @@ func _refresh_task_counts() -> void:
 	task_counts = [0, 0, 0, 0, 0, 0]
 	for a in ants:
 		task_counts[a.task] += 1
+
+func refresh_now() -> void:
+	_refresh_needs()
+	_refresh_task_counts()
 
 func _refresh_needs() -> void:
 	_refresh_path_weights()
@@ -1339,6 +1680,9 @@ func _refresh_needs() -> void:
 			dig_pending += 1
 			if is_claimable(t):
 				need_dig += 1
+	for t: DigTask in fill_tasks.values():
+		if t.claimed_by == null and t.blocked_until <= time:
+			need_dig += 1
 	need_clean = 0
 	for w in waste_items:
 		if w.claimed_by == null:

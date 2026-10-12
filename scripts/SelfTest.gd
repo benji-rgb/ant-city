@@ -100,6 +100,8 @@ func _setup_events() -> void:
 	_setup_common_events()
 
 func _setup_common_events() -> void:
+	if args.has("v8test"):
+		_setup_v8_events()
 	if args.has("threatat"):
 		var kind := int(args.get("threatkind", 0))
 		_events.append([float(args["threatat"]), func() -> void:
@@ -190,7 +192,13 @@ func _setup_founding_events() -> void:
 		_events.append([150.0, func() -> void:
 			tut.poll()
 			if not args.has("skiptut"):
-				_expect(tut.step == 6, "waste chamber reached the last tutorial step (step %d)" % tut.step)
+				_expect(tut.step == 6, "waste chamber reached the Orders step (step %d)" % tut.step)
+				main.toggle_orders()
+				tut.poll()
+				_expect(tut.step == 7, "opening Orders advanced the tutorial (step %d)" % tut.step)
+				main.toggle_orders()
+				tut.advance()
+				_expect(tut.step == 8, "last tutorial step (step %d)" % tut.step)
 				tut.advance()
 				_expect(not tut.running() and tut.done_once, "Finish closes the tutorial")])
 	_events.append([300.0, func() -> void:
@@ -201,6 +209,127 @@ func _setup_founding_events() -> void:
 		else:
 			_expect(alive >= 1 and c.queen != null, "do-nothing player: colony still alive after 5 minutes (%d workers)" % alive)])
 	_setup_common_events()
+
+## v8 checks: sugar caps, fill tool (connectivity + completion), castes / nuptial flight, threat orders, priorities.
+var _v8 := {}
+func _setup_v8_events() -> void:
+	var c := _colony()
+	_events.append([2.0, func() -> void:
+		_expect(Config.type_cap(1) * c.food_capacity < c.food_capacity * 0.5, "protein may take at most 40%% of storage")
+		var before := c.protein_stock
+		c.deposit_food(500.0, Config.Food.PROTEIN, Vector2i(40, 12))
+		_expect(c.protein_stock <= Config.type_cap(1) * c.food_capacity + 0.01, "protein capped (%.1f / cap %.1f)" % [c.protein_stock, c.food_capacity])
+		_expect(c.storage_accepts(Config.Food.SUGAR), "storage still accepts sugar when protein is at its cap")
+		print("[v8] protein %.1f -> %.1f, capacity %.1f" % [before, c.protein_stock, c.food_capacity])
+		# rejections
+		_expect(c.fill_error(Vector2i(5, 30)) != "", "fill rejects solid soil")
+		_expect(c.fill_error(c.queen_room.rect.position) != "", "fill rejects the queen chamber")
+		# a 3-cell dead-end branch to fill later
+		for y in range(Config.FIRST_SOIL_ROW + 3, Config.GRID_H - 4):
+			for x in range(Config.DIG_MIN_X + 4, Config.DIG_MAX_X - 4):
+				var t := Vector2i(x, y)
+				if c.grid.get_cell(t) == SoilGrid.Cell.TUNNEL and c.room_at(t) == null and not _v8.has("base"):
+					var ok := true
+					for i in range(1, 4):
+						var s := t + Vector2i(-i, 0)
+						for dy in [-1, 0, 1]:
+							var q := s + Vector2i(0, dy)
+							if c.grid.get_cell(q) != SoilGrid.Cell.SOIL or c.room_at(q) != null or c.dig_tasks.has(q):
+								ok = false
+					if ok:
+						_v8["base"] = t
+		_expect(_v8.has("base"), "found a spot for a test branch")
+		if _v8.has("base"):
+			var b: Vector2i = _v8["base"]
+			for i in range(1, 4):
+				c.add_dig_order(b + Vector2i(-i, 0))
+			print("[v8] test branch from ", b)])
+	_events.append([90.0, func() -> void:
+		if not _v8.has("base"):
+			return
+		var b: Vector2i = _v8["base"]
+		var leaf := b + Vector2i(-3, 0)
+		var mid := b + Vector2i(-2, 0)
+		_expect(c.grid.get_cell(leaf) == SoilGrid.Cell.TUNNEL, "test branch got dug")
+		var e := c.fill_error(mid)
+		_expect(e.begins_with("Would cut"), "fill of the middle cell is rejected (would strand the leaf): '%s'" % e)
+		var ent := c.grid.entrances()
+		if ent.size() == 1:
+			_expect(c.fill_error(Vector2i(ent[0].x, Config.FIRST_SOIL_ROW)) != "", "the only entrance can't be filled")
+		_expect(c.add_fill_order(leaf), "fill order on the dead-end leaf accepted (%s)" % c.fill_error(leaf))
+		_expect(c.add_fill_order(mid), "fill order on the middle cell accepted once the leaf is pending")
+		_expect(c.fill_error(b + Vector2i(-1, 0)) == "", "inner branch cell fillable too")
+		# right-drag cancel path
+		_expect(c.add_fill_order(b + Vector2i(-1, 0)) and c.cancel_fill_order(b + Vector2i(-1, 0)), "fill order can be cancelled")
+		_v8["filled0"] = c.total_filled])
+	_events.append([200.0, func() -> void:
+		if not _v8.has("base"):
+			return
+		var b: Vector2i = _v8["base"]
+		print("[v8] fill: total_filled %d, pending %d, mound used %d, soil used %d" % [c.total_filled, c.fill_tasks.size(), c.mound_used, c.soil_used])
+		_expect(c.grid.get_cell(b + Vector2i(-3, 0)) == SoilGrid.Cell.SOIL and c.grid.get_cell(b + Vector2i(-2, 0)) == SoilGrid.Cell.SOIL, "workers filled both cells back to soil")
+		_expect(not c.grid.is_walkable(b + Vector2i(-2, 0)), "filled cell is not walkable")
+		_expect(c.grid.find_path(b, Vector2i(40, Config.SURFACE_ROW)).size() > 0, "nest still connected after filling")
+		# castes: gynes only
+		c.caste_manual = true
+		c.caste_w = [0, 0, 1]
+		_v8["gyne_brood0"] = c.brood_of_caste(Brood.Caste.GYNE)
+		# priorities: forage off
+		_v8["forage0"] = c.job_actual()[0]
+		c.work_prio = [0, 2, 2, 2, 2]
+		c.refresh_now()
+		_expect(c.job_targets()[0] == 0, "forage priority 0 -> wanted foragers 0")])
+	_events.append([260.0, func() -> void:
+		var fa := c.job_actual()[0]
+		print("[v8] foragers %d -> %d with forage priority off; gyne brood %d" % [int(_v8["forage0"]), fa, c.brood_of_caste(Brood.Caste.GYNE)])
+		_expect(fa <= maxi(1, int(_v8["forage0"])), "fewer foragers with forage priority off (%d -> %d)" % [int(_v8["forage0"]), fa])
+		_expect(c.brood_of_caste(Brood.Caste.GYNE) > int(_v8["gyne_brood0"]) or c.gyne_count() > 0, "manual ratio 0:0:1 lays gyne eggs")
+		c.work_prio = [2, 2, 2, 2, 2]
+		c.caste_w = [6, 2, 0]
+		# threat orders
+		c.standing_order = 1
+		Config.threat_level = maxi(1, Config.threat_level)
+		var th := c.spawn_threat(Threat.Kind.RIVAL)
+		th.raider = true
+		th.position.x = c.grid.entrances()[0].x * 16.0 + 40.0     # right next to a hole
+		_v8["th"] = th
+		_expect(c.sealed(), "standing order Seal applies during an alarm")
+		_v8["raids0"] = c.raids
+		c.set_alarm_order(2)
+		_expect(c.evacuating() and not c.sealed(), "alarm banner choice overrides the standing order")
+		var deep: Room = null
+		var shallow: Room = null
+		for r in c.rooms:
+			if r.is_nursery():
+				if deep == null or r.rect.position.y > deep.rect.position.y:
+					deep = r
+				if shallow == null or r.rect.position.y < shallow.rect.position.y:
+					shallow = r
+		if deep != shallow:
+			_expect(c.brood_q(deep) > c.brood_q(shallow), "evacuate prefers the deepest nursery")
+		c.set_alarm_order(1)])
+	_events.append([340.0, func() -> void:
+		print("[v8] seal: raids %d -> %d, threats %d, intruders %d" % [int(_v8["raids0"]), c.raids, c.threats.size(), c.intruder_count()])
+		var th2 = _v8["th"]
+		var still: bool = is_instance_valid(th2) and th2.raider
+		var gave := false
+		for e in c.events:
+			if String(e).contains("entrances sealed"):
+				gave = true
+		print("[v8] raider valid %s, still raiding %s, gave-up event %s" % [is_instance_valid(th2), still, gave])
+		_expect(c.raids == int(_v8["raids0"]), "no raid got in while sealed")
+		_expect(gave and not still, "the raider found the entrances sealed and gave up")
+		# nuptial flight with three gynes
+		var deaths := c.total_deaths
+		for i in Config.GYNE_GOAL:
+			c._spawn_ant(c.queen_room.random_cell(), Ant.Caste.GYNE)
+		_expect(c.can_fly(), "%d gynes allow a nuptial flight" % Config.GYNE_GOAL)
+		var got := []
+		c.nuptial_flight.connect(func(d: Dictionary) -> void: got.append(d), CONNECT_ONE_SHOT)
+		_expect(c.start_nuptial_flight(), "nuptial flight starts")
+		_expect(c.flights == 1 and c.score > 0 and got.size() == 1, "flight counted, scored and summary emitted (score %d)" % c.score)
+		_expect(c.total_deaths == deaths, "flown gynes are not counted as deaths")
+		_expect(not c.can_fly(), "gynes are gone after the flight")])
 
 func _dig_line(start: Vector2i, dir: Vector2i, n: int) -> void:
 	var c := _colony()
@@ -483,7 +612,8 @@ func _report(dur: float) -> void:
 		carried += a.soil
 	print("v5: home trail %.1f, homing ok %d / fallback %d | soil dug %d = hauled %d + lost %d + carried %d | raids %d, food stolen %.1f, brood stolen %d, intruders killed %d | rain %d, flood peak %.2f, flood deaths %d" % [
 		c.home.total, c.homing_ok, c.homing_fallback, c.total_dug, c.soil_hauled, c.soil_lost, carried, c.raids, c.food_stolen, c.brood_stolen, c.intruders_killed, c.rain_count, c.flood_peak, c.flood_deaths])
-	if c.total_dug != c.soil_hauled + c.soil_lost + carried and not args.has("savetest"):
+	print("v8: filled %d (mound pellets %d, dug pellets %d), flights %d, score %d, gynes %d, prio %s, castes %s %s" % [c.total_filled, c.mound_used, c.soil_used, c.flights, c.score, c.gyne_count(), str(c.work_prio), "manual" if c.caste_manual else "auto", str(c.caste_w)])
+	if c.total_dug != c.soil_hauled + c.soil_lost + carried + c.soil_used and not args.has("savetest"):
 		_problems.append("soil not conserved (dug %d, hauled %d, lost %d, carried %d)" % [c.total_dug, c.soil_hauled, c.soil_lost, carried])
 	if dur >= 600.0 and c.total_dug > 4 and c.soil_hauled == 0:
 		_problems.append("no soil was hauled to the surface")
@@ -763,12 +893,48 @@ func _ui_test() -> void:
 	await _move_mouse(_px(Vector2i(30, 25)))
 	await _shot("climate")
 	await _key(KEY_H)
-	var sb: Button = main.ui.soldier_button
-	await _click(sb.get_global_rect().get_center())
-	_expect(c.soldier_mode == Colony.SoldierMode.OFF and sb.text.contains("Off"), "soldier button cycles Auto -> Off (%s)" % sb.text)
-	await _click(sb.get_global_rect().get_center())
-	await _click(sb.get_global_rect().get_center())
-	_expect(c.soldier_mode == Colony.SoldierMode.AUTO, "soldier button wraps back to Auto")
+	# --- v8 Orders panel
+	var ui: GameUI = main.ui
+	await _click(ui.soldier_button.get_global_rect().get_center())
+	_expect(ui.orders_panel.visible, "Orders button opens the orders panel")
+	await _click(ui.prio_plus[0].get_global_rect().get_center())
+	_expect(int(c.work_prio[0]) == 3, "Forage + raises the priority (%d)" % int(c.work_prio[0]))
+	await _click(ui.caste_auto_button.get_global_rect().get_center())
+	_expect(c.caste_manual, "caste button switches to the manual ratio")
+	for i in 8:
+		await get_tree().process_frame
+	await _shot("orders")
+	await _click(ui.preset_buttons[0].get_global_rect().get_center())
+	_expect(c.work_prio == [2, 2, 2, 2, 2], "Balanced preset resets priorities")
+	await _click(ui.caste_auto_button.get_global_rect().get_center())
+	_expect(not c.caste_manual, "caste button back to Auto")
+	await _key(KEY_O)
+	_expect(not ui.orders_panel.visible, "O closes the orders panel")
+	# --- v8 Fill tool
+	await _key(KEY_6)
+	_expect(int(main.tool) == 5, "6 selects the Fill tool")
+	await _key(KEY_1)
+	await _key(KEY_F)
+	_expect(int(main.tool) == 5, "F selects the Fill tool")
+	await _move_mouse(_px(c.queen_room.rect.position + Vector2i(1, 0)))
+	_expect(main.hover_visible and not main.hover_ok and main.fill_msg.contains("queen"), "red fill ghost explains the queen chamber (%s)" % main.fill_msg)
+	await _shot("fill_bad")
+	var fc := Vector2i(-1, -1)
+	for i in c.grid.walk_idx:
+		var cc := Vector2i(i % Config.GRID_W, i / Config.GRID_W)
+		if cc.y > Config.FIRST_SOIL_ROW + 2 and c.fill_error(cc) == "":
+			fc = cc
+			break
+	_expect(fc.x >= 0, "some tunnel cell can be filled")
+	if fc.x >= 0:
+		await _move_mouse(_px(fc))
+		_expect(main.hover_ok, "green fill ghost on a dead-end cell")
+		await _click(_px(fc))
+		_expect(c.fill_tasks.has(fc), "click paints a fill order")
+		await _shot("fill_order")
+		await _click(_px(fc), MOUSE_BUTTON_RIGHT)
+		_expect(not c.fill_tasks.has(fc), "right-click cancels the fill order")
+	await _key(KEY_1)
 	var tb: Button = main.ui.threat_button
 	var lvl := Config.threat_level
 	await _click(tb.get_global_rect().get_center())
@@ -808,6 +974,11 @@ func _ui_test() -> void:
 		max_poly = maxi(max_poly, au.playing_count())
 		if not shot_done and c.time - t_spawn > 1.5 and not c.threats.is_empty():
 			shot_done = true
+			_expect(main.ui.alarm_panel.visible, "alarm banner is shown during the threat")
+			await _click(main.ui.alarm_buttons[1].get_global_rect().get_center())
+			_expect(c.current_order() == 1 and c.sealed(), "alarm banner: Seal entrances")
+			await _click(main.ui.alarm_buttons[0].get_global_rect().get_center())
+			_expect(c.current_order() == 0, "alarm banner: Fight")
 			await _key(KEY_P)
 			await _shot("threat")
 			await _key(KEY_P)
@@ -816,6 +987,22 @@ func _ui_test() -> void:
 	_expect(int(au.played.get("fight", 0)) >= 1, "fight sound played during combat (%d plays)" % int(au.played.get("fight", 0)))
 	_expect(max_poly <= GameAudio.POOL_SIZE, "simultaneous one-shots stayed within the limit (max %d)" % max_poly)
 	print("[ui] audio played=", au.played, " throttled=", au.throttled)
+	# --- v8 nuptial flight + summary
+	for i in Config.GYNE_GOAL:
+		c._spawn_ant(c.queen_room.random_cell(), Ant.Caste.GYNE)
+	for i in 30:
+		await get_tree().process_frame
+	await _key(KEY_O)
+	for i in 10:
+		await get_tree().process_frame
+	_expect(not main.ui.fly_button.disabled, "flight button enabled with %d gynes" % Config.GYNE_GOAL)
+	await _shot("gynes")
+	await _click(main.ui.fly_button.get_global_rect().get_center())
+	_expect(c.flights == 1 and main.ui.summary_panel.visible and main.paused, "nuptial flight shows the summary and pauses")
+	await _shot("flight_summary")
+	await _click(main.ui.summary_button.get_global_rect().get_center())
+	_expect(not main.ui.summary_panel.visible and not main.paused, "Continue closes the summary")
+	await _key(KEY_O)
 	# --- inspect the waste chamber
 	await _key(KEY_1)
 	await _click(_px(Vector2i(33, 19)))

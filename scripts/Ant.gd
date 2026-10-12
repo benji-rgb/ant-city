@@ -6,13 +6,13 @@ extends Node2D
 ## patrol the entrances and answer the alarm pheromone.
 
 enum Task { IDLE, NURSE, DIG, FORAGE, CLEAN, GUARD }
-enum State { WAIT, MOVE, SEARCH, DIGGING, FEEDING, DEAD, HIDE, FIGHT }
+enum State { WAIT, MOVE, SEARCH, DIGGING, FEEDING, DEAD, HIDE, FIGHT, FILLING }
 enum Purpose { NONE, WANDER, TO_ENTRANCE, DEPOSIT, PICKUP_FOOD, TO_LARVA, TO_DIG, PICKUP_BROOD, CARRY_BROOD,
-	PICKUP_WASTE, DROP_WASTE, DUMP_WASTE, DROP_FOOD, PICKUP_DROPPED, HIDE, PATROL, RESPOND, HAUL_SOIL, RESPOND_IN }
-enum Caste { WORKER, SOLDIER }
+	PICKUP_WASTE, DROP_WASTE, DUMP_WASTE, DROP_FOOD, PICKUP_DROPPED, HIDE, PATROL, RESPOND, HAUL_SOIL, RESPOND_IN, GET_SOIL, TO_FILL }
+enum Caste { WORKER, SOLDIER, GYNE }     # v8: gyne = winged young queen (does not work)
 
 const TASK_NAMES := ["Idle", "Nurse", "Dig", "Forage", "Clean", "Guard"]
-const STATE_NAMES := ["waiting", "walking", "searching surface", "digging", "feeding larva", "dead", "hiding", "fighting"]
+const STATE_NAMES := ["waiting", "walking", "searching surface", "digging", "feeding larva", "dead", "hiding", "fighting", "filling a tunnel"]
 const COL_DIG_BAR := Color(1.0, 0.8, 0.2)
 
 var colony: Colony
@@ -65,6 +65,10 @@ var home_dst := Vector2i(-1, -1)
 var soil := 0                   # soil pellets carried to the surface mound
 var haul_x := -1
 var fight_target: Threat = null # intruder inside the nest we are fighting
+# v8 fill tool
+var fill_task: DigTask = null
+var fill_soil := 0              # pellet fetched from a mound / topsoil for filling (not part of dug soil)
+var fill_t := 0.0
 
 func setup(col: Colony, start_cell: Vector2i, caste_ := 0, queen := false) -> void:
 	colony = col
@@ -81,6 +85,10 @@ func setup(col: Colony, start_cell: Vector2i, caste_ := 0, queen := false) -> vo
 	if caste == Caste.SOLDIER:
 		lifespan = Config.SOLDIER_LIFESPAN * randf_range(0.85, 1.15)
 		task = Task.GUARD
+	elif caste == Caste.GYNE:
+		lifespan = Config.LIFESPAN_MEAN * 3.0
+		task = Task.IDLE
+		hp = Config.WORKER_HP * 2.0
 	elif not queen:
 		lifespan = maxf(200.0, Config.LIFESPAN_MEAN + randf_range(-1.0, 1.0) * Config.LIFESPAN_VARIANCE)
 		hp = Config.WORKER_HP
@@ -136,6 +144,8 @@ func step(dt: float) -> void:
 			_step_search(dt)
 		State.DIGGING:
 			_step_digging(dt)
+		State.FILLING:
+			_step_filling(dt)
 		State.FEEDING:
 			wait_timer -= dt
 			if wait_timer <= 0.0:
@@ -179,6 +189,7 @@ func set_task(t: int) -> void:
 	wait_timer = randf_range(0.0, 0.6)
 
 func _release_claims() -> void:
+	abandon_fill()
 	if dig_task != null:
 		if dig_task.claimed_by == self:
 			dig_task.claimed_by = null
@@ -228,6 +239,14 @@ func _check_threats() -> void:
 		return
 	colony.alarm.deposit(cell, 2.0)
 	colony.note_threat_seen(th)
+	# v8 Fight order: some workers near the predator stand and bite instead of fleeing
+	if caste == Caste.WORKER and colony.fighting() and state != State.FIGHT and not carrying_brood \
+			and absf(th.position.x - position.x) < 6.0 * Config.CELL and randf() < Config.FIGHT_JOIN_CHANCE:
+		_release_claims_for_flight()
+		state = State.FIGHT
+		attack_t = 0.0
+		fear_t = 2.0
+		return
 	if caste == Caste.WORKER and state != State.HIDE and purpose != Purpose.HIDE and randf() > Config.FLEE_CHANCE:
 		fear_t = 3.0          # did not react in time: carries on for a few seconds
 		return
@@ -270,6 +289,10 @@ func _decide() -> void:
 		return
 	if caste == Caste.SOLDIER:
 		_decide_soldier()
+		return
+	if caste == Caste.GYNE:
+		# gynes don't work: they wait in the queen chamber (or a nursery) for the nuptial flight
+		_wander_in(colony.queen_room.rect if colony.queen_room else Rect2i(cell, Vector2i(1, 1)))
 		return
 	if carry_food > 0.0:
 		_go_deposit()
@@ -316,7 +339,81 @@ func _decide_nurse() -> void:
 		return
 	_wander_nursery()
 
+## v8: drop a claimed fill order (the pellet stays in the jaws for the next one).
+func abandon_fill() -> void:
+	if fill_task != null:
+		if fill_task.claimed_by == self:
+			fill_task.claimed_by = null
+			fill_task.progress = 0.0
+		fill_task = null
+	if state == State.FILLING:
+		state = State.WAIT
+		wait_timer = 0.2
+
+## A cell was packed with soil: re-plan if our path crosses it.
+func on_cell_filled(c: Vector2i) -> void:
+	if state == State.MOVE:
+		for i in range(path_i, path.size()):
+			if path[i] == c:
+				path = []
+				state = State.WAIT
+				wait_timer = 0.1
+				_release_claims()
+				return
+
+func _decide_fill() -> bool:
+	if colony.fill_tasks.is_empty():
+		return false
+	fill_task = colony.claim_fill_task(self)
+	if fill_task == null:
+		return false
+	_go_fill()
+	return true
+
+func _go_fill() -> void:
+	if fill_task == null:
+		return
+	if fill_soil <= 0 and soil <= 0:
+		# fetch soil: prefer the surface mounds, else scrape topsoil by an entrance
+		var mx := colony.mound_for_fill(cell)
+		var x := mx if mx >= 0 else colony.nearest_entrance_x(cell)
+		haul_x = mx
+		if _go_to(Vector2i(x, Config.SURFACE_ROW), Purpose.GET_SOIL):
+			return
+	else:
+		var acc := colony.fill_access_cell(fill_task.cell, cell)
+		if acc.x >= 0 and _go_to(acc, Purpose.TO_FILL):
+			return
+	fill_task.blocked_until = colony.time + 8.0
+	abandon_fill()
+	wait_timer = 1.0
+
+func _step_filling(dt: float) -> void:
+	if fill_task == null or colony.fill_tasks.get(fill_task.cell) != fill_task:
+		abandon_fill()
+		state = State.WAIT
+		wait_timer = 0.2
+		return
+	if colony.ant_on_cell(fill_task.cell, self):
+		return      # someone is standing in the cell: wait
+	fill_t += dt * colony.age_efficiency(self)
+	fill_task.progress = clampf(fill_t / Config.FILL_TIME, 0.0, 1.0)
+	if fill_t >= Config.FILL_TIME:
+		var t := fill_task
+		fill_task = null
+		if colony.complete_fill(t):
+			if fill_soil > 0:
+				fill_soil -= 1
+			elif soil > 0:
+				soil -= 1
+				colony.soil_used += 1
+		state = State.WAIT
+		wait_timer = 0.1
+		state_time = 0.0
+
 func _decide_dig() -> void:
+	if not colony.fill_tasks.is_empty() and (colony.dig_tasks.is_empty() or randf() < 0.5) and _decide_fill():
+		return
 	dig_task = colony.claim_dig_task(self)
 	if dig_task == null and soil > 0:
 		_go_haul()
@@ -344,7 +441,7 @@ func _decide_clean() -> void:
 	wait_timer = 2.0
 
 func _decide_forage() -> void:
-	if colony.alarm_active() and cell.y != Config.SURFACE_ROW:
+	if (colony.alarm_active() or colony.sealed()) and cell.y != Config.SURFACE_ROW:
 		wait_timer = randf_range(2.0, 4.0)      # the alarm is up: stay home
 		return
 	var k := colony.claim_dropped(cell)
@@ -468,8 +565,9 @@ func _go_to(target: Vector2i, p: int) -> bool:
 	return true
 
 func _speed() -> float:
-	var s := Config.QUEEN_SPEED if is_queen else (Config.SOLDIER_SPEED if caste == Caste.SOLDIER else Config.WORKER_SPEED)
+	var s := Config.QUEEN_SPEED if (is_queen or caste == Caste.GYNE) else (Config.SOLDIER_SPEED if caste == Caste.SOLDIER else Config.WORKER_SPEED)
 	s *= 1.0 - 0.5 * hunger
+	s *= colony.age_efficiency(self)     # v8: young nurses / old foragers work best
 	if carry_food > 0.0 or carrying_brood or carrying_waste or soil > 0:
 		s *= 0.9
 	if colony.is_flooded(cell):
@@ -629,6 +727,27 @@ func _on_arrive() -> void:
 				fight_target = null
 				state = State.WAIT
 				wait_timer = 0.3
+		Purpose.GET_SOIL:
+			if fill_task != null and colony.fill_tasks.get(fill_task.cell) == fill_task:
+				if haul_x < 0 or not colony.take_mound(haul_x):
+					pass     # no mound left: scrape a pellet of topsoil
+				fill_soil = 1
+				colony.add_fx(position, "dust", "")
+				_go_fill()
+			else:
+				abandon_fill()
+				state = State.WAIT
+				wait_timer = 0.3
+		Purpose.TO_FILL:
+			if fill_task != null and colony.fill_tasks.get(fill_task.cell) == fill_task \
+					and grid.get_cell(fill_task.cell) == SoilGrid.Cell.TUNNEL:
+				state = State.FILLING
+				fill_t = 0.0
+				face = (grid.cell_center(fill_task.cell) - position).angle()
+			else:
+				abandon_fill()
+				state = State.WAIT
+				wait_timer = 0.2
 		Purpose.HAUL_SOIL:
 			if soil > 0:
 				colony.add_mound(haul_x if haul_x >= 0 else cell.x, soil)
@@ -850,7 +969,7 @@ func _step_fight(dt: float) -> void:
 		attack_t += dt
 		if attack_t >= 0.5:
 			attack_t = 0.0
-			th.hit(Config.SOLDIER_DAMAGE * 0.5)
+			th.hit(Config.SOLDIER_DAMAGE * (0.5 if caste == Caste.SOLDIER else Config.WORKER_SURFACE_DMG))
 
 # ------------------------------------------------------------------ info / drawing
 func task_color() -> Color:
@@ -891,7 +1010,7 @@ const SPRITE_SCALE := {"worker_ant": 0.5, "soldier_ant": 0.5, "queen_ant": 0.48}
 const ART_K := 1.5      # code legs / antennae grow with the bigger batch-3 sprites
 
 func _sprite() -> Array:
-	var key := "queen_ant" if is_queen else ("soldier_ant" if caste == Caste.SOLDIER else "worker_ant")
+	var key := "queen_ant" if (is_queen or caste == Caste.GYNE) else ("soldier_ant" if caste == Caste.SOLDIER else "worker_ant")
 	if not _spr_cache.has(key):
 		_spr_cache[key] = Art.sprite(key)
 	return _spr_cache[key]
@@ -905,6 +1024,8 @@ func _draw() -> void:
 		s = 1.9
 	elif soldier:
 		s = 1.3
+	elif caste == Caste.GYNE:
+		s = 1.4
 	var body := Color(0.52, 0.18, 0.09)
 	if is_queen:
 		body = Color(0.40, 0.12, 0.08)
@@ -998,14 +1119,25 @@ func _draw() -> void:
 		draw_set_transform(Vector2(0, bob), face, Vector2(s, s))
 	elif carrying_waste:
 		Art.dot(self, Vector2(7.2, 0), 2.1, Color(0.45, 0.36, 0.22))
-	elif soil > 0:
+	elif soil > 0 or fill_soil > 0:
 		draw_rect(Rect2(6.0, -1.8, 3.6, 3.6), Color(0.62, 0.46, 0.30))
 		draw_rect(Rect2(6.0, -1.8, 3.6, 3.6), Color(0.25, 0.17, 0.10), false, 0.6)
+	if caste == Caste.GYNE:
+		# translucent wings: plain lines (web-safe, no polygons)
+		var wc := Color(0.85, 0.92, 1.0, 0.75)
+		for sy in [-1.0, 1.0]:
+			draw_line(Vector2(1, 0), Vector2(-7, 5.5 * sy), wc, 1.4)
+			draw_line(Vector2(-7, 5.5 * sy), Vector2(-10, 3 * sy), wc, 1.0)
+			draw_line(Vector2(1, 0), Vector2(-10, 3 * sy), wc, 1.0)
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	# task marker + selection ring
 	var my := -7.0 * s
 	Art.dot(self, Vector2(0, my), 2.0, Color(0, 0, 0, 0.6))
 	Art.dot(self, Vector2(0, my), 1.5, task_color() if not is_queen else Color(1, 0.85, 0.2))
+	if state == State.FILLING:
+		var fprog := fill_task.progress if fill_task != null else 0.0
+		draw_rect(Rect2(-6, 7, 12, 2), Color(0, 0, 0, 0.6))
+		draw_rect(Rect2(-6, 7, 12.0 * fprog, 2), Color(0.75, 0.55, 0.30))
 	if state == State.DIGGING:
 		var prog := dig_task.progress if dig_task != null else 0.0
 		draw_rect(Rect2(-6, 7, 12, 2), Color(0, 0, 0, 0.6))

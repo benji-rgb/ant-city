@@ -69,7 +69,36 @@ const SUGAR_RATE_WORKER := 0.014  # sugar / s per worker (their fuel)
 const SUGAR_RATE_QUEEN := 0.030
 const SUGAR_RATE_SOLDIER := 0.028
 const STORAGE_PER_CELL := 5.0     # food capacity per storage cell (sugar + protein share it)
-const TYPE_CAP_FRAC := 0.7        # one food type may fill at most this share of the storage
+const TYPE_CAP_FRAC := 0.7        # (v8: replaced by TYPE_CAP per type)
+# v8 sugar fix: per-type share of the storage. Protein may only take 40 %, so a storage can never
+# fill up with protein while the colony starves for sugar (the user's day-9 game).
+const TYPE_CAP := [0.75, 0.40]
+static func type_cap(t: int) -> float:
+	return TYPE_CAP[t]
+
+# v8 workforce priorities (0..4 per job; 2 = normal) -> multiplier on the utility score
+const PRIO_MULT := [0.0, 0.5, 1.0, 1.6, 2.5]
+const PRIO_JOBS := ["Forage", "Nurse", "Dig", "Clean", "Guard"]
+const PRIO_PRESETS := {"Balanced": [2, 2, 2, 2, 2], "Growth": [3, 3, 1, 2, 1], "Defense": [1, 2, 1, 2, 4]}
+const AGE_EFF_MIN := 0.7          # an ant doing a job its age is bad at works this fast (1.0 = ideal age)
+
+# v8 castes: worker / soldier / gyne (winged queen)
+const CASTE_NAMES := ["Worker", "Soldier", "Gyne"]
+const CASTE_PROTEIN := [0.5, 1.0, 2.5]
+const CASTE_SUGAR := [0.0, 0.0, 1.0]
+const CASTE_TIME := [1.0, 1.3, 1.8]   # larva + pupa time multiplier
+const GYNE_GOAL := 3                  # gynes needed for a nuptial flight
+const GYNE_MAX := 6
+const GYNE_AUTO_WORKERS := 30         # Auto raises gynes only in a big, well fed colony
+const SUGAR_RATE_GYNE := 0.02
+
+# v8 threat orders
+const ORDER_NAMES := ["Fight", "Seal entrances", "Evacuate brood"]
+const FIGHT_JOIN_CHANCE := 0.5        # Fight: chance a surface worker near a threat joins instead of fleeing
+const WORKER_SURFACE_DMG := 0.15      # x SOLDIER_DAMAGE
+
+# v8 fill tool
+const FILL_TIME := 2.5
 const BROOD_PER_CELL := 1         # brood capacity per nursery cell
 const WASTE_PER_CELL := 6.0       # refuse units per waste-chamber cell
 const EGG_INTERVAL := 15.0
@@ -77,7 +106,8 @@ const EGG_PROTEIN_COST := 0.5     # a worker egg costs protein ...
 const SOLDIER_EGG_PROTEIN_COST := 1.0  # ... a soldier egg costs more
 const LAY_PROTEIN_MIN := 3.0      # queen only lays if protein stock >= this (and sugar > 0)
 const LAY_COMFORT := 12.0         # below this protein stock the laying rate drops (down to 25%)
-const FOOD_COMFORT_TYPE := 0.30   # comfortable stock of ONE type, as share of capacity (min 12)
+const FOOD_COMFORT_TYPE := 0.30   # (v8: see FOOD_COMFORT_SHARE)
+const FOOD_COMFORT_SHARE := [0.42, 0.22]   # comfortable sugar / protein stock as share of capacity (min 12)
 const FOOD_TYPE_WEIGHT := [0.78, 0.22]   # how much of the colony's appetite each type represents
 
 
@@ -91,7 +121,7 @@ const LARVA_FED_DECAY := 40.0     # seconds for a full larva to become hungry-em
 const LARVA_STARVE_DEATH := 50.0  # seconds at fed == 0 before the larva dies
 
 # food sources
-const FOOD_LAYOUT := [0, 0, 0, 1, 1]   # food type of each pile slot (0 sugar, 1 protein)
+const FOOD_LAYOUT := [0, 0, 0, 0, 1, 1]   # v8: 4 sugar piles   # food type of each pile slot (0 sugar, 1 protein)
 const FOOD_AMOUNT_MIN := 30.0
 const FOOD_AMOUNT_MAX := 50.0
 const FOOD_RESPAWN := 25.0

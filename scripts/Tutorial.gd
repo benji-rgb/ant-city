@@ -26,7 +26,9 @@ const STEPS := [
 	["3. Build a Food Storage", "Press 4 (Storage) and place it next to a tunnel. Until it exists the little reserve lives in the queen chamber.", "storage", false],
 	["4. Watch the foragers", "Foragers search the surface for sugar and protein and lay scent trails home.\nPress P (Trails) to see them: yellow sugar, pink protein, blue the way home.", "trails", false],
 	["5. Build a Waste chamber", "Press 5 (Waste) and place it a bit away from the nursery. Cleaners carry refuse there; a dirty nest makes brood sick.", "waste", false],
-	["6. You're ready!", "Spiders and rival scouts roam the surface - soldiers are raised automatically (Soldiers button), Threats sets difficulty.\nSave with K, load with L, Tab shows all keys. Good luck, Your Majesty!", "save", true],
+	["6. Give orders", "Press O (Orders). Set job priorities (or a preset), and choose what new eggs become: Auto, or your Worker : Soldier : Gyne ratio.\nRaise 3 gynes (winged queens) for a Nuptial flight - your big goal.", "orders", false],
+	["7. Alarms and filling", "When danger shows up, a red ALARM banner appears: pick Fight, Seal entrances or Evacuate brood (the Orders panel sets the default).\nFill [6/F] packs unwanted tunnels with soil again; red cells tell you why not.", "fill", true],
+	["8. You're ready!", "Threats sets the difficulty. Save with K, load with L, Tab shows all keys.\nGood luck, Your Majesty!", "save", true],
 ]
 
 func _ready() -> void:
@@ -140,6 +142,7 @@ func _step_done() -> bool:
 		3: return _has_room(Room.Type.FOOD_STORAGE)
 		4: return main.overlay.show_phero or c.total_foraged > float(_base.get("foraged", 0.0)) + 6.0
 		5: return _has_room(Room.Type.WASTE)
+		6: return main.ui.orders_panel.visible
 	return false
 
 func _process(delta: float) -> void:
@@ -163,6 +166,8 @@ func _target() -> Control:
 		"waste": return ui.tool_buttons[4]
 		"trails": return ui.phero_button
 		"save": return ui.save_button
+		"orders": return ui.soldier_button
+		"fill": return ui.tool_buttons[5]
 	return null
 
 func _draw() -> void:

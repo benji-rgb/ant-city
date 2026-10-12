@@ -166,7 +166,11 @@ func _try_enter(dt: float) -> bool:
 		dir = signf(tx - position.x)
 		position.x += dir * speed * dt
 		return true
-	# at the hole: pick a target and go in
+	# at the hole: pick a target and go in (unless the colony sealed its entrances)
+	if colony.sealed():
+		raider = false
+		colony.log_event("A raider found the entrances sealed and gave up.", "alert")
+		return false
 	var goal := colony.raid_target(randf() < 0.5)
 	if goal.is_empty():
 		raider = false

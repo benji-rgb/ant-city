@@ -4,7 +4,7 @@ extends RefCounted
 ## (e.g. a freshly laid egg in the queen chamber) or is being carried by a nurse.
 
 enum Stage { EGG, LARVA, PUPA }
-enum Caste { WORKER, SOLDIER }
+enum Caste { WORKER, SOLDIER, GYNE }
 
 var uid: int = 0
 var stage: int = Stage.EGG
