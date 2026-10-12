@@ -1,0 +1,633 @@
+extends Node
+## Developer harness (not used in normal play). Started by Main when the game is launched with
+##   godot --headless --path . -- --selftest=600 [--seed=1] [--dt=0.0333]
+##   godot --path . -- --shot=/tmp/a.png [--ffwd=240]
+## Drives the simulation without rendering, scripts a few "player" actions and prints a report.
+
+var main: Node
+var args: Dictionary = {}
+var manual_stepping := true
+
+var _events: Array = []
+var _max_stuck := 0.0
+var _stuck_desc := ""
+var _problems: Array[String] = []
+var _max_workers := 0
+var _min_workers := 9999
+var _task_samples := {}
+var _min_hygiene := 1.0
+var _max_waste := 0
+var _max_soldiers := 0
+var _saved_probe := {}
+
+func _ready() -> void:
+	_run.call_deferred()
+
+func _colony() -> Colony:
+	return main.colony
+
+func _run() -> void:
+	var dt := float(args.get("dt", 1.0 / 30.0))
+	var c := _colony()
+	_setup_events()
+	var nf := int(args.get("foods", Config.FOOD_LAYOUT.size()))
+	for i in c.foods.size():
+		if i >= nf:
+			c.foods[i].active = false
+			c.foods[i].respawn_t = 1e9
+	if args.has("nofood"):
+		for f in c.foods:
+			f.active = false
+			f.respawn_t = 1e9
+	if args.has("audiotest"):
+		await _audio_test()
+		get_tree().quit(1 if _problems.size() > 0 else 0)
+		return
+	if args.has("selftest"):
+		var dur := float(args["selftest"])
+		await _simulate(dur, dt)
+		_report(dur)
+		get_tree().quit(1 if _problems.size() > 0 else 0)
+		return
+	# screenshot mode
+	var ffwd := float(args.get("ffwd", 0.0))
+	await _simulate(ffwd, dt)
+	manual_stepping = false
+	if args.has("uitest"):
+		await _ui_test()
+		get_tree().quit(1 if _problems.size() > 0 else 0)
+		return
+	main.speed = float(args.get("speed", 1.0))
+	if args.has("phero"):
+		main.toggle_phero()
+	if args.has("climate"):
+		main.toggle_climate()
+	if args.has("tool"):
+		main.set_tool(int(args["tool"]))
+		get_viewport().warp_mouse(Vector2(float(args.get("mx", 700)), float(args.get("my", 330))))
+	for i in 20:
+		await get_tree().process_frame
+	var path := String(args["shot"])
+	var img := get_viewport().get_texture().get_image()
+	img.save_png(path)
+	print("screenshot saved: ", path, " ", img.get_size(), " t=", int(c.time), "s")
+	if args.has("shot2"):
+		main.toggle_phero()
+		for i in 60:
+			await get_tree().process_frame
+		get_viewport().get_texture().get_image().save_png(String(args["shot2"]))
+		print("screenshot saved: ", args["shot2"])
+	await _audio_shutdown()
+	get_tree().quit(0)
+
+func _setup_events() -> void:
+	# [time, callable]
+	_events = [
+		[5.0, func() -> void: _dig_line(Vector2i(20, 9), Vector2i(0, 1), 6)],        # new entrance shaft
+		[8.0, func() -> void: _place(Room.Type.NURSERY, Rect2i(41, 16, 5, 3))],
+		[12.0, func() -> void: _place(Room.Type.FOOD_STORAGE, Rect2i(31, 14, 5, 3))],
+		[16.0, func() -> void: _dig_line(Vector2i(41, 17), Vector2i(1, 0), 0)],       # (invalid: inside planned room) just exercises validation
+		[20.0, func() -> void: _try_invalid()],
+		[24.0, func() -> void: _place(Room.Type.WASTE, Rect2i(28, 18, 4, 2))],
+	]
+	if args.has("threatat"):
+		var kind := int(args.get("threatkind", 0))
+		_events.append([float(args["threatat"]), func() -> void:
+			Config.threat_level = maxi(1, Config.threat_level)
+			_colony().spawn_threat(kind)
+			print("[test] spawned a threat of kind ", kind, " at t=", int(_colony().time))])
+	if args.has("soldiermode"):
+		_events.append([1.0, func() -> void: _colony().soldier_mode = int(args["soldiermode"])])
+	if args.has("savetest"):
+		_events.append([float(args["savetest"]), func() -> void: _save_probe()])
+	if args.has("killfoods"):
+		# trail-fade test: at T every pile vanishes for good; the pheromone total should decay to ~0
+		_events.append([float(args["killfoods"]), func() -> void:
+			print("[test] all food sources removed; pheromone total now %.1f" % (_colony().trails[0].total + _colony().trails[1].total))
+			for f in _colony().foods:
+				f.active = false
+				f.respawn_t = 1e9])
+
+func _dig_line(start: Vector2i, dir: Vector2i, n: int) -> void:
+	var c := _colony()
+	var ok := 0
+	for i in range(n + 1):
+		if c.add_dig_order(start + dir * i):
+			ok += 1
+	print("[test] dig line from ", start, " -> ", ok, "/", n + 1, " orders accepted")
+
+func _place(type: int, rect: Rect2i) -> void:
+	var c := _colony()
+	var err := c.placement_error(type, rect)
+	var r := c.place_room(type, rect)
+	print("[test] place ", Room.type_name(type), " ", rect, " err='", err, "' ", "OK" if r != null else "REJECTED")
+	if r == null:
+		_problems.append("room placement unexpectedly rejected: " + str(rect))
+
+func _try_invalid() -> void:
+	var c := _colony()
+	var e1 := c.placement_error(Room.Type.NURSERY, Rect2i(60, 30, 5, 3))     # floating in soil
+	var e2 := c.placement_error(Room.Type.NURSERY, Rect2i(41, 16, 5, 3))     # overlaps planned room
+	var e3 := c.placement_error(Room.Type.NURSERY, Rect2i(40, 5, 5, 3))      # sky
+	var o1 := c.can_order_dig(Vector2i(60, 30))                                # not adjacent to open cell
+	print("[test] validation: floating='", e1, "' overlap='", e2, "' sky='", e3, "' dig-nonadjacent=", o1)
+	if e1 == "" or e2 == "" or e3 == "" or o1:
+		_problems.append("validation failed")
+	# load error handling: missing file, garbage, wrong version, missing keys -> message, colony untouched
+	var n_ants := c.ants.size()
+	var bad := {"user://does_not_exist.json": null, "user://bad_garbage.json": "{not json", "user://bad_version.json": '{"version": 1}',
+		"user://bad_keys.json": '{"version": 3, "rooms": []}'}
+	for path in bad:
+		if bad[path] != null:
+			var f := FileAccess.open(path, FileAccess.WRITE)
+			f.store_string(String(bad[path]))
+			f.close()
+		var err := SaveGame.load_file(c, path)
+		print("[test] load ", path.get_file(), " -> '", err, "'")
+		if err == "" or c.ants.size() != n_ants:
+			_problems.append("bad save file handling: " + path)
+
+func _simulate(duration: float, dt: float) -> void:
+	var c := _colony()
+	var steps := int(duration / dt)
+	var next_log := 0.0
+	var next_ev := 0
+	var next_sample := 0.0
+	var wall0 := Time.get_ticks_msec()
+	for i in steps:
+		while next_ev < _events.size() and c.time >= _events[next_ev][0]:
+			_events[next_ev][1].call()
+			next_ev += 1
+		c.sim_step(dt)
+		if c.time >= next_sample:
+			next_sample = c.time + 2.0
+			_sample()
+		if c.time >= next_log:
+			next_log = c.time + 60.0
+			_log_line()
+		if i % 2000 == 0:
+			await get_tree().process_frame
+	print("[test] simulated %.0f sim-s in %.1f wall-s" % [duration, (Time.get_ticks_msec() - wall0) / 1000.0])
+
+func _log_line() -> void:
+	var c := _colony()
+	var tc := c.task_counts
+	print("t=%4ds | W%2d S%d (idle %d nurse %d dig %d forage %d clean %d) | brood %2d/%2d e%d l%d p%d | sugar %5.1f prot %5.1f /%3.0f | waste %d hyg %.2f | thr %d | trail %.0f/%.0f | born %d died %d %s" % [
+		int(c.time), c.worker_count(), c.soldier_count(), tc[0], tc[1], tc[2], tc[3], tc[4], c.brood.size(), c.nursery_capacity,
+		c.brood_counts[0], c.brood_counts[1], c.brood_counts[2], c.sugar_stock, c.protein_stock, c.food_capacity,
+		c.waste_items.size(), c.hygiene, c.threats.size(), c.trails[0].total, c.trails[1].total, c.total_born, c.total_deaths, str(c.death_reasons)])
+
+func _sample() -> void:
+	var c := _colony()
+	_max_workers = maxi(_max_workers, c.ants.size())
+	_min_workers = mini(_min_workers, c.ants.size())
+	var all: Array[Ant] = c.ants.duplicate()
+	all.append(c.queen)
+	for a in all:
+		if not (is_finite(a.position.x) and is_finite(a.position.y)):
+			_problems.append("NaN position")
+			continue
+		if not c.grid.is_walkable(a.cell):
+			_problems.append("ant on non-walkable cell %s task=%d state=%d" % [str(a.cell), a.task, a.state])
+		if a.position.distance_to(c.grid.stand_pos(a.cell)) > 40.0:
+			_problems.append("ant far from its cell %s pos=%s" % [str(a.cell), str(a.position)])
+		if a.state == Ant.State.MOVE and a.state_time > _max_stuck:
+			_max_stuck = a.state_time
+			_stuck_desc = "task=%d purpose=%d cell=%s path=%d/%d" % [a.task, a.purpose, str(a.cell), a.path_i, a.path.size()]
+		if not a.is_queen and a.state == Ant.State.SEARCH and a.state_time > 600.0:
+			_problems.append("ant searching > 600s")
+	_task_samples[c.task_counts.duplicate().hash()] = true
+	if not is_finite(c.food_stock) or c.sugar_stock < -0.001 or c.protein_stock < -0.001:
+		_problems.append("bad food stock %f / %f" % [c.sugar_stock, c.protein_stock])
+	_min_hygiene = minf(_min_hygiene, c.hygiene)
+	_max_waste = maxi(_max_waste, c.waste_items.size())
+	_max_soldiers = maxi(_max_soldiers, c.soldier_count())
+	_check_invariants()
+
+func _check_invariants() -> void:
+	var c := _colony()
+	var seen := {}
+	for b in c.brood:
+		if b.dead:
+			_problems.append("dead brood still listed")
+		if seen.has(b.uid):
+			_problems.append("duplicate brood uid")
+		seen[b.uid] = true
+		var r := b.room
+		if r != null and (b.slot >= r.slots.size() or r.slots[b.slot] != b):
+			_problems.append("brood/room slot mismatch")
+		if b.in_transit and (b.carried_by == null or not is_instance_valid(b.carried_by) or not b.carried_by.carrying_brood):
+			_problems.append("brood in transit without a valid carrier")
+		if b.dest_room != null and b.dest_room.reserved.get(b.dest_slot) != b:
+			_problems.append("brood destination not reserved")
+	for r in c.rooms:
+		for s in r.reserved:
+			var rb: Brood = r.reserved[s]
+			if rb.dead or rb.dest_room != r:
+				_problems.append("stale reservation")
+		for i in r.slots.size():
+			if r.slots[i] != null and (r.slots[i] as Brood).dead:
+				_problems.append("dead brood in slot")
+	for a in c.ants:
+		if a.carrying_brood and a.move_brood == null:
+			_problems.append("carrying_brood without move_brood")
+		if a.carry_food < -0.001 or a.carry_food > 20.0:
+			_problems.append("bad carry_food")
+
+func _save_probe() -> void:
+	var c := _colony()
+	var path := "user://selftest_save.json"
+	var ok := SaveGame.save(c, path)
+	_saved_probe = {"ok": ok, "workers": c.ants.size(), "brood": c.brood.size(), "sugar": c.sugar_stock, "protein": c.protein_stock,
+		"rooms": c.rooms.size(), "trail0": c.trails[0].total, "waste": _all_waste(c), "time": c.time, "soldiers": c.soldier_count(),
+		"cells": c.grid.cells.duplicate(), "hash0": hash(c.trails[0].a.to_byte_array()), "hash1": hash(c.trails[1].a.to_byte_array()), "halarm": hash(c.alarm.a.to_byte_array()), "fhash": _food_hash(c)}
+	print("[test] saved at t=%d: %s" % [int(c.time), str({"workers": c.ants.size(), "brood": c.brood.size(), "rooms": c.rooms.size()})])
+	# keep simulating for a while, then load it back and compare
+	_events.append([c.time + 40.0, func() -> void: _load_probe(path)])
+
+func _all_waste(c: Colony) -> int:
+	var n := c.waste_items.size()
+	for a in c.ants:
+		if a.carrying_waste:
+			n += 1     # carried refuse is saved as a lying item
+	return n
+
+func _food_hash(c: Colony) -> int:
+	var arr := []
+	for f in c.foods:
+		arr.append([f.col, snappedf(f.amount, 0.001), f.type, f.active])
+	return str(arr).hash()
+
+func _load_probe(path: String) -> void:
+	var c := _colony()
+	print("[test] before load: workers %d brood %d rooms %d t=%d" % [c.ants.size(), c.brood.size(), c.rooms.size(), int(c.time)])
+	var err := SaveGame.load_file(c, path)
+	if err != "":
+		_problems.append("load failed: " + err)
+		return
+	c.sim_step(0.0001)   # refresh caches
+	var same: bool = c.ants.size() == _saved_probe["workers"] and c.brood.size() == _saved_probe["brood"] \
+		and c.rooms.size() == _saved_probe["rooms"] and _all_waste(c) == _saved_probe["waste"] \
+		and c.soldier_count() == _saved_probe["soldiers"] and c.grid.cells == _saved_probe["cells"] \
+		and absf(c.sugar_stock - float(_saved_probe["sugar"])) < 0.01 and absf(c.protein_stock - float(_saved_probe["protein"])) < 0.01 \
+		and absf(c.time - float(_saved_probe["time"])) < 0.01 \
+		and hash(c.trails[0].a.to_byte_array()) == _saved_probe["hash0"] and hash(c.trails[1].a.to_byte_array()) == _saved_probe["hash1"] \
+		and hash(c.alarm.a.to_byte_array()) == _saved_probe["halarm"] and _food_hash(c) == _saved_probe["fhash"]
+	if not same:
+		print("[test] detail: ants ", c.ants.size() == _saved_probe["workers"], " brood ", c.brood.size() == _saved_probe["brood"], " rooms ", c.rooms.size() == _saved_probe["rooms"],
+			" waste ", _all_waste(c) == _saved_probe["waste"], " soldiers ", c.soldier_count() == _saved_probe["soldiers"], " cells ", c.grid.cells == _saved_probe["cells"],
+			" sugar ", c.sugar_stock, "/", _saved_probe["sugar"], " prot ", c.protein_stock, "/", _saved_probe["protein"], " time ", c.time, "/", _saved_probe["time"],
+			" h0 ", hash(c.trails[0].a.to_byte_array()) == _saved_probe["hash0"], " h1 ", hash(c.trails[1].a.to_byte_array()) == _saved_probe["hash1"],
+			" alarm ", hash(c.alarm.a.to_byte_array()) == _saved_probe["halarm"], " food ", _food_hash(c) == _saved_probe["fhash"])
+	print("[test] after load: workers %d brood %d rooms %d t=%d trail0 %.1f (saved %.1f) -> %s" % [c.ants.size(), c.brood.size(), c.rooms.size(), int(c.time), c.trails[0].total, _saved_probe["trail0"], "MATCH" if same else "MISMATCH"])
+	if not same:
+		_problems.append("save/load state mismatch")
+	# second save must reproduce the same file contents (round trip)
+	var d1 := SaveGame.to_dict(c)
+	var d2 := SaveGame.to_dict(c)
+	if JSON.stringify(d1) != JSON.stringify(d2):
+		_problems.append("to_dict not deterministic")
+
+func _report(dur: float) -> void:
+	var c := _colony()
+	if args.has("dbg"):
+		for t: DigTask in c.dig_tasks.values():
+			var a := t.claimed_by
+			print("[dbg] task ", t.cell, " claimed=", a != null, " claimable=", c.is_claimable(t), " blocked=", t.blocked_until, " ant=", ("" if a == null else "%s state=%d purpose=%d cell=%s path=%d/%d st=%.0f" % [a.task, a.state, a.purpose, str(a.cell), a.path_i, a.path.size(), a.state_time]))
+	_log_line()
+	print("---- report after %.0f sim seconds ----" % dur)
+	print("workers min/max/now: %d / %d / %d" % [_min_workers, _max_workers, c.ants.size()])
+	print("born %d, deaths %d %s, larvae starved %d, eggs laid %d" % [c.total_born, c.total_deaths, str(c.death_reasons), c.starved_larvae, c.total_laid])
+	print("dug cells %d, total food deposited %.0f, dropped on the floor %.0f (still lying: %d piles)" % [c.total_dug, c.total_foraged, c.food_dropped_total, c.dropped.size()])
+	print("brood carries %d (of which %d relocations to a better chamber), diseased brood %d | waste disposed %d (still lying %d, max %d), min hygiene %.2f, middens %s" % [c.brood_moved, c.brood_relocated, c.diseased_brood, c.waste_disposed, c.waste_items.size(), _max_waste, _min_hygiene, str(c.middens)])
+	print("threats seen %d, killed %d | soldiers now %d (max %d) | mounds %s" % [c.threat_count, c.threats_killed, c.soldier_count(), _max_soldiers, str(c.mounds)])
+	var rq := ""
+	for r in c.rooms:
+		if r.type == Room.Type.NURSERY:
+			rq += "%s q=%.2f  " % [str(r.rect), r.quality]
+	print("nursery climate comfort: ", rq)
+	var rooms := ""
+	for r in c.rooms:
+		rooms += "[%s %s active=%s] " % [Room.type_name(r.type), str(r.rect), str(r.active)]
+	print("rooms: ", rooms)
+	print("entrances: ", c.grid.entrances())
+	var early := 0.0
+	var late := 0.0
+	var ne := 0
+	var nl := 0
+	for v in c.search_log:
+		if v.x <= 3:
+			early += v.y
+			ne += 1
+		elif v.x >= 8:
+			late += v.y
+			nl += 1
+	if ne > 0 and nl > 0:
+		print("pickups %d; mean search time for a source's first 3 trips %.1fs (n=%d) vs trips #8+ %.1fs (n=%d)" % [c.search_log.size(), early / ne, ne, late / nl, nl])
+	if args.has("dbgwaste"):
+		for w in c.waste_items:
+			var ca := w.claimed_by
+			print("[dbg] waste ", w.cell, " kind ", w.kind, " claimed=", ca != null, (" by task %d state %d purpose %d cell %s path %d/%d st=%.0f" % [ca.task, ca.state, ca.purpose, str(ca.cell), ca.path_i, ca.path.size(), ca.state_time]) if ca != null else "")
+		for a in c.ants:
+			if a.task == Ant.Task.CLEAN:
+				print("[dbg] cleaner state %d purpose %d carrying %s item %s cell %s wait %.1f" % [a.state, a.purpose, str(a.carrying_waste), str(a.waste_item != null), str(a.cell), a.wait_timer])
+	if args.has("events"):
+		for e in c.events:
+			print("   event: ", e)
+	print("longest continuous MOVE seen: %.1fs (%s)" % [_max_stuck, _stuck_desc])
+	var uniq := {}
+	for p in _problems:
+		uniq[p] = int(uniq.get(p, 0)) + 1
+	for p in uniq:
+		print("PROBLEM (x%d): %s" % [uniq[p], p])
+	print("RESULT: ", "OK" if _problems.is_empty() else "PROBLEMS")
+
+
+# ---------------------------------------------------------------- simulated player input
+func _px(c: Vector2i) -> Vector2:
+	return main.grid.cell_center(c)
+
+func _key(code: int) -> void:
+	for pressed in [true, false]:
+		var e := InputEventKey.new()
+		e.keycode = code
+		e.physical_keycode = code
+		e.pressed = pressed
+		Input.parse_input_event(e)
+	await get_tree().process_frame
+
+func _move_mouse(p: Vector2) -> void:
+	var e := InputEventMouseMotion.new()
+	e.position = p
+	e.global_position = p
+	if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+		e.button_mask = MOUSE_BUTTON_MASK_LEFT
+	Input.parse_input_event(e)
+	await get_tree().process_frame
+	await get_tree().process_frame
+
+func _button(p: Vector2, idx: int, pressed: bool) -> void:
+	var e := InputEventMouseButton.new()
+	e.position = p
+	e.global_position = p
+	e.button_index = idx
+	e.pressed = pressed
+	Input.parse_input_event(e)
+	await get_tree().process_frame
+
+func _click(p: Vector2, idx := MOUSE_BUTTON_LEFT) -> void:
+	await _move_mouse(p)
+	await _button(p, idx, true)
+	await _button(p, idx, false)
+
+func _shot(name: String) -> void:
+	for i in 5:
+		await get_tree().process_frame
+	var path := "%s_%s.png" % [String(args["shot"]), name]
+	get_viewport().get_texture().get_image().save_png(path)
+	print("[ui] screenshot ", path)
+
+func _expect(cond: bool, msg: String) -> void:
+	print("[ui] ", "PASS " if cond else "FAIL ", msg)
+	if not cond:
+		_problems.append("ui: " + msg)
+
+## Audio manager checks; run headless with --audiotest --forcesound (dummy audio driver).
+func _audio_test() -> void:
+	var au: GameAudio = main.audio
+	_expect(au.enabled, "audio manager enabled (forced under the dummy driver)")
+	_expect(au.missing.is_empty(), "all one-shot streams loaded (missing: %s)" % [au.missing])
+	_expect(au.ambient_playing(), "both ambient loops are playing")
+	for p in [au._amb_surface, au._amb_nest]:
+		var s := p.stream as AudioStreamWAV
+		_expect(s.loop_mode == AudioStreamWAV.LOOP_FORWARD and s.loop_begin == 0 and s.loop_end == s.data.size() / 2 and s.loop_end > 44100 * 10, "ambient loop set to the full sample (%d frames, %.2f s)" % [s.loop_end, float(s.loop_end) / s.mix_rate])
+	for n in GameAudio.SFX:
+		var st := au._stream(n) as AudioStreamWAV
+		_expect(st != null and st.get_length() > 0.03 and st.get_length() < 2.5 and st.loop_mode == AudioStreamWAV.LOOP_DISABLED, "%s loads as a one-shot (%.2f s)" % [n, st.get_length() if st != null else -1.0])
+	# throttling: ten immediate dig requests start at most one
+	var d0 := int(au.played.get("dig", 0))
+	var ok := 0
+	for i in 10:
+		if au.play("dig"):
+			ok += 1
+	_expect(ok == 1 and int(au.played["dig"]) == d0 + 1 and int(au.throttled.get("dig", 0)) >= 9, "dig is throttled (%d of 10 started)" % ok)
+	_expect(au.play("ui_click"), "ui_click plays")
+	_expect(au.play("fight") and au.play("threat_warning") and au.play("alarm"), "fight / threat_warning / alarm play")
+	_expect(not au.play("alarm"), "alarm is throttled")
+	_expect(au.playing_count() <= GameAudio.POOL_SIZE, "one-shots never exceed the pool (%d playing)" % au.playing_count())
+	# missing files / unknown names must be harmless
+	_expect(not au.play("no_such_sound"), "unknown sound name is ignored")
+	var n_missing := au.missing.size()
+	_expect(au._stream("no_such_file") == null and au.missing.size() == n_missing + 1, "missing file is reported and returns null")
+	au.missing.clear()
+	# master volume + mute (restore the user's settings afterwards)
+	var m0 := au.master
+	var mu0 := au.muted
+	au.set_master(0.5)
+	_expect(is_equal_approx(AudioServer.get_bus_volume_db(0), linear_to_db(0.5)), "master volume applied to the Master bus")
+	au.change_master(10.0)
+	_expect(is_equal_approx(au.master, 1.0), "master volume clamps at 100%")
+	au.change_master(-10.0)
+	_expect(is_equal_approx(au.master, 0.0), "master volume clamps at 0%")
+	au.muted = false
+	au.toggle_mute()
+	_expect(au.muted and AudioServer.is_bus_mute(0) and au.label() == "MUTED [M]", "mute switches the bus off")
+	au.toggle_mute()
+	_expect(not AudioServer.is_bus_mute(0), "unmute works")
+	au.set_master(m0)
+	au.muted = mu0
+	au._apply_master()
+	au._save_settings()
+	# run the simulation a little with sound events enabled
+	await _simulate(120.0, 1.0 / 30.0)
+	print("[audio] played=", au.played, " throttled=", au.throttled)
+	# let the mixer finish the one-shots before quitting so the engine can release the playbacks
+	await get_tree().create_timer(2.6).timeout
+	au._exit_tree()
+	await get_tree().create_timer(0.5).timeout
+
+func _audio_shutdown() -> void:
+	if main.audio.enabled:
+		main.audio._exit_tree()
+		await get_tree().create_timer(0.5).timeout
+
+func _ui_test() -> void:
+	var c := _colony()
+	main.speed = 4.0
+	var au: GameAudio = main.audio
+	var m_start := au.master
+	var mute_start := au.muted
+	_expect(au.enabled and au.ambient_playing(), "audio manager active with ambient loops (dummy driver)")
+	_expect(main.ui.sound_button.text.begins_with("Sound") or main.ui.sound_button.text.begins_with("MUTED"), "HUD sound indicator shows '%s'" % main.ui.sound_button.text)
+	_expect(main.ui.help_panel.visible, "help overlay is shown at start")
+	await _shot("help")
+	await _key(KEY_F1)
+	_expect(not main.ui.help_panel.visible, "F1 hides the help overlay")
+	_expect(int(au.played.get("ui_click", 0)) >= 1, "UI click sound played for F1")
+	# --- dig tool: drag a vertical line from the surface
+	await _key(KEY_2)
+	_expect(main.tool == 1, "key 2 selects Dig")
+	await _move_mouse(_px(Vector2i(60, 9)))
+	await _button(_px(Vector2i(60, 9)), MOUSE_BUTTON_LEFT, true)
+	await _move_mouse(_px(Vector2i(60, 16)))
+	await _move_mouse(_px(Vector2i(64, 16)))
+	await _shot("dig_drag")
+	await _button(_px(Vector2i(64, 16)), MOUSE_BUTTON_LEFT, false)
+	var n_orders := c.dig_tasks.size()
+	_expect(n_orders >= 11, "drag painted a connected line of orders (%d)" % n_orders)
+	# non adjacent cell must be refused
+	await _click(_px(Vector2i(70, 30)))
+	_expect(not c.dig_tasks.has(Vector2i(70, 30)), "isolated soil cell refused")
+	# right-drag cancels the tail of the line
+	await _move_mouse(_px(Vector2i(64, 16)))
+	await _button(_px(Vector2i(64, 16)), MOUSE_BUTTON_RIGHT, true)
+	await _move_mouse(_px(Vector2i(62, 16)))
+	await _button(_px(Vector2i(62, 16)), MOUSE_BUTTON_RIGHT, false)
+	_expect(not c.dig_tasks.has(Vector2i(63, 16)) and not c.dig_tasks.has(Vector2i(62, 16)), "right-drag cancelled orders")
+	# --- nursery tool next to the queen chamber
+	await _key(KEY_3)
+	await _move_mouse(_px(Vector2i(35, 22)))
+	_expect(main.ghost_visible and main.ghost_ok, "nursery ghost valid next to queen chamber")
+	await _shot("ghost_ok")
+	await _key(KEY_R)
+	_expect(main.ghost_rect.size == Vector2i(3, 5), "R rotates the ghost")
+	await _key(KEY_R)
+	var rooms_before := c.rooms.size()
+	await _click(_px(Vector2i(35, 22)))
+	_expect(c.rooms.size() == rooms_before + 1, "click placed a planned nursery")
+	var planned := c.room_at(Vector2i(35, 22))
+	_expect(planned != null and not planned.active, "planned room is inactive until dug")
+	# --- storage tool: invalid spot
+	await _key(KEY_4)
+	await _move_mouse(_px(Vector2i(60, 30)))
+	_expect(main.ghost_visible and not main.ghost_ok, "storage ghost invalid in the middle of nowhere (%s)" % main.ghost_msg)
+	await _shot("ghost_bad")
+	await _click(_px(Vector2i(60, 30)))
+	_expect(c.rooms.size() == rooms_before + 1, "invalid click placed nothing")
+	# --- waste tool: plan a chamber next to the queen chamber
+	await _key(KEY_5)
+	_expect(main.tool == 4, "key 5 selects Waste")
+	await _move_mouse(_px(Vector2i(45, 22)))
+	_expect(main.ghost_visible and main.ghost_ok and main.ghost_type == Room.Type.WASTE, "waste ghost valid next to queen chamber (%s)" % main.ghost_msg)
+	var rooms_w := c.rooms.size()
+	await _click(_px(Vector2i(45, 22)))
+	_expect(c.rooms.size() == rooms_w + 1, "click planned a waste chamber")
+	var planned_waste := c.room_at(Vector2i(45, 22))
+	# --- speed / pause / overlay keys
+	await _key(KEY_P)
+	_expect(main.overlay.show_phero, "P toggles pheromone overlay")
+	await _key(KEY_SPACE)
+	_expect(main.paused, "Space pauses")
+	await _key(KEY_SPACE)
+	await _key(KEY_MINUS)
+	_expect(is_equal_approx(main.speed, 2.0), "minus lowers speed to 2x")
+	await _key(KEY_EQUAL)
+	_expect(is_equal_approx(main.speed, 4.0), "plus raises speed to 4x")
+	await _key(KEY_ESCAPE)
+	_expect(main.tool == 0, "Esc returns to Select")
+	# --- sound keys: M mute, [ ] volume, HUD indicator, clickable button
+	au.set_master(0.5)
+	main.ui.show_sound(au)
+	await _key(KEY_M)
+	_expect(au.muted != mute_start and AudioServer.is_bus_mute(0) == au.muted, "M toggles mute (muted=%s)" % au.muted)
+	_expect(main.ui.sound_button.text == au.label() and (not au.muted or main.ui.sound_button.text.begins_with("MUTED")), "HUD shows '%s'" % main.ui.sound_button.text)
+	await _shot("muted")
+	await _click(main.ui.sound_button.get_global_rect().get_center())
+	_expect(au.muted == mute_start, "clicking the sound button toggles mute back")
+	await _key(KEY_BRACKETRIGHT)
+	_expect(is_equal_approx(au.master, 0.6) and main.ui.sound_button.text.contains("60%"), "] raises volume to 60%% (%s)" % main.ui.sound_button.text)
+	await _key(KEY_BRACKETLEFT)
+	await _key(KEY_BRACKETLEFT)
+	_expect(is_equal_approx(au.master, 0.4), "[ lowers volume to 40%")
+	au.set_master(m_start)
+	au.muted = mute_start
+	au._apply_master()
+	au._save_settings()
+	main.ui.show_sound(au)
+	# --- run 4x for a while: everything planned should get dug out
+	var t0 := c.time
+	var frames := 0
+	while c.time - t0 < 240.0 and frames < 6000 and (c.dig_tasks.size() > 0):
+		await get_tree().process_frame
+		frames += 1
+	print("[ui] ran %d frames (%.0f sim s) at 4x, remaining dig orders: %d" % [frames, c.time - t0, c.dig_tasks.size()])
+	_expect(int(au.played.get("dig", 0)) >= 1, "dig sound played during excavation (%d plays, %d throttled)" % [int(au.played.get("dig", 0)), int(au.throttled.get("dig", 0))])
+	_expect(planned.active, "planned nursery became active after being dug out")
+	_expect(planned_waste != null and planned_waste.active and planned_waste.type == Room.Type.WASTE, "planned waste chamber became active")
+	_expect(c.grid.get_cell(Vector2i(60, 12)) == SoilGrid.Cell.TUNNEL, "painted shaft was dug")
+	_expect(c.grid.entrances().has(Vector2i(60, 8)), "new entrance registered")
+	# --- select an ant by clicking it
+	await _key(KEY_1)
+	var a: Ant = c.ants[0]
+	await _click(a.position)
+	_expect(main.selected_ant != null, "click selects an ant")
+	await _shot("selected")
+	# --- climate overlay, mode buttons, save / load
+	await _key(KEY_H)
+	_expect(main.overlay.show_climate, "H toggles the climate overlay")
+	await _move_mouse(_px(Vector2i(30, 25)))
+	await _shot("climate")
+	await _key(KEY_H)
+	var sb: Button = main.ui.soldier_button
+	await _click(sb.get_global_rect().get_center())
+	_expect(c.soldier_mode == Colony.SoldierMode.OFF and sb.text.contains("Off"), "soldier button cycles Auto -> Off (%s)" % sb.text)
+	await _click(sb.get_global_rect().get_center())
+	await _click(sb.get_global_rect().get_center())
+	_expect(c.soldier_mode == Colony.SoldierMode.AUTO, "soldier button wraps back to Auto")
+	var tb: Button = main.ui.threat_button
+	var lvl := Config.threat_level
+	await _click(tb.get_global_rect().get_center())
+	_expect(Config.threat_level == (lvl + 1) % 3, "threat button cycles the level (%s)" % tb.text)
+	await _click(tb.get_global_rect().get_center())
+	await _click(tb.get_global_rect().get_center())
+	_expect(Config.threat_level == lvl, "threat button wraps")
+	await _key(KEY_SPACE)
+	var snap_ants := c.ants.size()
+	var snap_brood := c.brood.size()
+	var snap_rooms := c.rooms.size()
+	var snap_t := c.time
+	var f5 := SaveGame.DEFAULT_PATH
+	if FileAccess.file_exists(f5):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(f5))
+	await _key(KEY_F5)
+	_expect(FileAccess.file_exists(f5), "F5 wrote the save file")
+	await get_tree().process_frame
+	await _key(KEY_F9)
+	_expect(c.ants.size() == snap_ants and c.brood.size() == snap_brood and c.rooms.size() == snap_rooms and absf(c.time - snap_t) < 0.01, "F9 restored the saved colony (%d ants, %d brood, %d rooms)" % [c.ants.size(), c.brood.size(), c.rooms.size()])
+	await _key(KEY_SPACE)
+	for i in 120:
+		await get_tree().process_frame
+	_expect(not main.paused and c.time > snap_t + 1.0, "game keeps running after loading")
+	_expect(main.ui.log_label.text != "", "event log shows lines")
+	# --- a predator shows up: alarm + soldiers
+	for i in 3:
+		c._spawn_ant(Vector2i(c.grid.entrances()[0].x, Config.FIRST_SOIL_ROW + 1 + i), Ant.Caste.SOLDIER)
+	var th := c.spawn_threat(Threat.Kind.SPIDER)
+	th.position.x = c.grid.entrances()[0].x * 16.0 + 70.0
+	_expect(int(au.played.get("threat_warning", 0)) >= 1, "threat warning sound played when the spider appeared")
+	var t_spawn := c.time
+	var max_poly := 0
+	var shot_done := false
+	while c.time - t_spawn < 60.0 and not c.threats.is_empty():
+		await get_tree().process_frame
+		max_poly = maxi(max_poly, au.playing_count())
+		if not shot_done and c.time - t_spawn > 4.0 and not c.threats.is_empty():
+			shot_done = true
+			await _key(KEY_P)
+			await _shot("threat")
+			await _key(KEY_P)
+	print("[ui] threat resolved after %.0f sim s; soldiers %d" % [c.time - t_spawn, c.soldier_count()])
+	_expect(shot_done, "a threat screenshot was taken while it was alive")
+	_expect(int(au.played.get("fight", 0)) >= 1, "fight sound played during combat (%d plays)" % int(au.played.get("fight", 0)))
+	_expect(max_poly <= GameAudio.POOL_SIZE, "simultaneous one-shots stayed within the limit (max %d)" % max_poly)
+	print("[ui] audio played=", au.played, " throttled=", au.throttled)
+	# --- inspect the waste chamber
+	await _key(KEY_1)
+	await _click(_px(Vector2i(33, 19)))
+	_expect(main.selected_room != null and main.selected_room.type == Room.Type.WASTE, "clicking the waste chamber selects it")
+	await _shot("room_info")
+	# --- right click cancels a planned room
+	await _key(KEY_3)
+	await _move_mouse(_px(Vector2i(24, 30)))
+	await _audio_shutdown()
+	print("[ui] done: workers=%d brood=%d food=%.1f" % [c.ants.size(), c.brood.size(), c.food_stock])

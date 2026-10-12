@@ -1,0 +1,59 @@
+# Ant City — TODO / roadmap (after v4)
+
+## Done in v4
+- [x] Audio manager (ambient surface / nest crossfade, 5 one-shots, throttling, master volume, mute, settings file), HUD indicator.
+- [x] Icons on buttons, stats lines and event log; chamber art; ant / predator sprites; sky background.
+
+## Done in v3
+- [x] Queen lays in her chamber; nurses carry eggs/larvae to nurseries and relocate brood to better-climate chambers.
+- [x] Full storage no longer destroys food (foragers drop it at the entrance, others carry it in later).
+- [x] Brood <-> Room reference cycle fixed (weak reference).
+- [x] Soil mounds at the entrances (visual).
+- [x] Waste chamber, cleaners, corpses, refuse, middens, hygiene -> brood disease.
+- [x] Soldier caste (auto / off / max), patrols, alarm pheromone.
+- [x] Surface threats (spider, rival scout) with a difficulty toggle; ambient surface death kept tiny.
+- [x] Depth based temperature / humidity, brood comfort, H overlay.
+- [x] Sugar + protein with separate trails, HUD and colony needs.
+- [x] Save / load (F5 / F9), event log, help overlay, ant animation, effect popups.
+
+## Skipped / only partly done in v3 (be honest)
+- [ ] **Home pheromone** inside the nest: skipped. Inside tunnels ants still use A* (perfect memory). Rationale: the outdoor trail is where the
+      interesting behaviour is; a home gradient would need a 4th grid and a rewrite of every in-nest walk.
+- [ ] Mounds are only decoration: diggers don't physically carry soil out (no "carrying pellet" state) and mounds don't block anything.
+- [ ] Threats stay on the surface (no intruders entering the nest, no tunnel flooding).
+- [ ] No sound (the request was sound-free feedback: effects + log + HUD warnings only).
+- [ ] The save file does not keep predators / in-flight actions (documented in the GDD).
+
+## P0 — polish what exists
+- [ ] Balance pass with human playtesting (everything was tuned with the headless self-test only): early-game sugar is tight, soldier AUTO rarely triggers from "food plentiful" alone.
+- [ ] Soil pellets physically carried out by diggers; a dig order should be refused if it would cut a chamber off.
+- [ ] Mid-aged "storage work": move food between storage chambers, pack food, keep entrances clear.
+- [ ] A day/night tint on the sky, ants that react to the day cycle (foraging peaks), seasons that change food respawn.
+- [ ] Proper difficulty / scenario presets (food scarcity, start size, threat mix) and a score / game-over screen.
+- [ ] A nursery should be able to be *marked* (player priority) as "soldier nursery"; brood caste visible when selected.
+
+## P1 — new systems
+- [ ] Queen death / new queen, nuptial flights, colony extinction score.
+- [ ] More threats: beetles, rain flooding shallow tunnels, rival colony raids that *enter* the nest, ants fighting rivals underground.
+- [ ] Seeds / fungus gardens as a third food chain; storage split by type per chamber.
+- [ ] Worker caste variance (minors/majors), trail-quality learning, home pheromone.
+- [ ] Disease spreading between chambers (corpses next to the nursery are worse than in the waste chamber).
+
+## P2 — presentation
+- [ ] More sound: footsteps, eating, hatching, queen laying, music; positional (panned) effects; a speaker icon for the sound button (none was delivered).
+- [ ] Zoom / pan camera, bigger map and chunked rendering; animated sprite sheets (current sprites are single frames, legs are code-drawn).
+- [ ] Weather and critters above ground; grass animation.
+- [ ] Stats graph panel; tooltips on every HUD element; localisation (ES/EN).
+- [ ] Controller / touch input; accessibility (colour-blind task markers).
+
+## Asset follow-ups (from the v4 integration)
+- [ ] `load.png` shows an up arrow (reads like "upload"); a down arrow would suit "Load [F9]". `dig.png` is a hammer / pick rather than a shovel. Icons are ~1 px off-centre (62 px opaque in a 64 px canvas).
+- [ ] The queen-chamber picture has a queen painted in it, so the real queen appears next to a "ghost" queen (art is drawn at 62 % opacity); an empty-chamber variant would be better.
+- [ ] The storage picture has painted sugar / protein items; the live fill heaps are drawn over them on a dark backing.
+- [ ] Convert the WAV loops to OGG if memory matters (~2.4 MB of WAV now).
+
+## Tech debt
+- [ ] Move `SelfTest` scenarios into GUT/GdUnit tests and add CI (`godot --headless`; remember a parse error makes headless Godot hang -> use `timeout`).
+- [ ] Spatial index for `ant_at`, `claim_waste`, `claim_dig_task` if worker counts go into the hundreds.
+- [ ] `Colony.gd` is ~1100 lines: split brood logistics, food/waste storage and threat/soldier policy into helper classes.
+- [ ] Saves are version-locked (`SaveGame.VERSION`); add migration if the format changes.
