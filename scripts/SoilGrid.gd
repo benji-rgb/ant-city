@@ -143,6 +143,11 @@ func _carve_rect(r: Rect2i) -> void:
 			cells[y * W + x] = Cell.TUNNEL
 
 func _carve_start_nest() -> void:
+	if not Config.classic_start:
+		# v6 founding: a short entrance shaft and the small queen chamber only (below the flood rows)
+		_carve_rect(Rect2i(40, 9, 1, 10))
+		_carve_rect(Config.FOUND_QUEEN_RECT)
+		return
 	_carve_rect(Rect2i(40, 9, 1, 12))     # entrance shaft: col 40, rows 9..20
 	_carve_rect(Rect2i(34, 12, 6, 1))     # tunnel west to the storage
 	_carve_rect(Rect2i(29, 12, 5, 2))     # storage chamber (cols 29..33, rows 12..13)

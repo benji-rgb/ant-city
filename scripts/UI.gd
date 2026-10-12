@@ -67,6 +67,10 @@ var phero_button: Button
 var climate_button: Button
 var soldier_button: Button
 var threat_button: Button
+var save_button: Button
+var help_button: Button
+var tutorial_button: Button
+signal tutorial_pressed()
 var _help_t := 0.0
 var _last_log := ""
 
@@ -187,6 +191,7 @@ func _build() -> void:
 	_set_icon(climate_button, "climate")
 	climate_button.tooltip_text = "Temperature / humidity overlay with brood comfort (H)."
 	var help_b := _button(bar, "Help [Tab]", Vector2(454, 36), Vector2(104, 26), false)
+	help_button = help_b
 	help_b.pressed.connect(func() -> void: help_toggled.emit())
 	_set_icon(help_b, "help")
 	help_b.tooltip_text = "Show / hide the help text (Tab or ?)."
@@ -199,6 +204,7 @@ func _build() -> void:
 	_set_icon(threat_button, "threat_spider")
 	threat_button.tooltip_text = "Surface predators: Off, Gentle or Normal."
 	var save_b := _button(bar, "Save [K]", Vector2(314, 66), Vector2(120, 26), false)
+	save_button = save_b
 	save_b.pressed.connect(func() -> void: save_pressed.emit())
 	_set_icon(save_b, "save")
 	save_b.tooltip_text = "Save the colony to user://antcity_save.json (K)."
@@ -235,6 +241,16 @@ func _build() -> void:
 	sound_button.tooltip_text = "Click or press M to mute. [ and ] change the master volume."
 	sound_button.pressed.connect(func() -> void: sound_pressed.emit())
 	add_child(sound_button)
+	tutorial_button = Button.new()
+	tutorial_button.text = "Tutorial"
+	tutorial_button.position = Vector2(1128, 656)
+	tutorial_button.size = Vector2(144, 26)
+	tutorial_button.focus_mode = Control.FOCUS_NONE
+	tutorial_button.add_theme_font_size_override("font_size", 12)
+	tutorial_button.tooltip_text = "Start the short guided tutorial again."
+	tutorial_button.pressed.connect(func() -> void: tutorial_pressed.emit())
+	_set_icon(tutorial_button, "help", 18)
+	add_child(tutorial_button)
 
 	help_panel = _panel(Vector2(190, 140), Vector2(900, 470), 0.9)
 	help_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE

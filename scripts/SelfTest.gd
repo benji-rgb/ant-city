@@ -86,6 +86,9 @@ func _run() -> void:
 
 func _setup_events() -> void:
 	# [time, callable]
+	if not Config.classic_start:
+		_setup_founding_events()
+		return
 	_events = [
 		[5.0, func() -> void: _dig_line(Vector2i(20, 9), Vector2i(0, 1), 6)],        # new entrance shaft
 		[8.0, func() -> void: _place(Room.Type.NURSERY, Rect2i(41, 16, 5, 3))],
@@ -94,6 +97,9 @@ func _setup_events() -> void:
 		[20.0, func() -> void: _try_invalid()],
 		[24.0, func() -> void: _place(Room.Type.WASTE, Rect2i(28, 18, 4, 2))],
 	]
+	_setup_common_events()
+
+func _setup_common_events() -> void:
 	if args.has("threatat"):
 		var kind := int(args.get("threatkind", 0))
 		_events.append([float(args["threatat"]), func() -> void:
@@ -145,6 +151,56 @@ func _setup_events() -> void:
 				f.respawn_t = 1e9])
 
 	_events.sort_custom(func(x: Array, y: Array) -> bool: return float(x[0]) < float(y[0]))
+
+## v6 founding start. --tutor: do what the tutorial asks, at a beginner's pace (and check the
+## tutorial advances on those actions); without it the player does nothing.
+func _setup_founding_events() -> void:
+	_events = []
+	var c := _colony()
+	_events.append([0.5, func() -> void:
+		_expect(c.rooms.size() == 1 and c.queen_room != null, "founding start has only the queen chamber")
+		_expect(c.worker_count() == Config.FOUND_WORKERS and c.brood.size() == Config.FOUND_EGGS + Config.FOUND_LARVAE, "founding start: %d workers, %d brood" % [c.worker_count(), c.brood.size()])
+		_expect(c.food_capacity > 0.0 and absf(c.sugar_stock - Config.FOUND_SUGAR) < 1.0, "the reserve sits in the queen chamber (S%.0f P%.0f)" % [c.sugar_stock, c.protein_stock])])
+	if args.has("tutor"):
+		var tut: Tutorial = main.tutorial
+		_events.append([1.0, func() -> void:
+			if args.has("skiptut"):
+				tut.skip()
+				_expect(not tut.running() and tut.done_once, "Skip ends the tutorial and marks it done")
+			else:
+				tut.start()
+				tut.advance()      # "Next" on the welcome page
+				_expect(tut.step == 1, "tutorial at the dig step")])
+		_events.append([20.0, func() -> void: _dig_line(Vector2i(40, 21), Vector2i(0, 1), 3)])     # down from the queen chamber
+		_events.append([25.0, func() -> void:
+			tut.poll()
+			if not args.has("skiptut"):
+				_expect(tut.step == 2, "dig orders advanced the tutorial (step %d)" % tut.step)])
+		_events.append([45.0, func() -> void: _place(Room.Type.NURSERY, Rect2i(34, 19, 5, 2))])
+		_events.append([80.0, func() -> void: _place(Room.Type.FOOD_STORAGE, Rect2i(43, 19, 5, 2))])
+		_events.append([100.0, func() -> void:
+			tut.poll()
+			if not args.has("skiptut"):
+				_expect(tut.step == 4, "rooms advanced the tutorial (step %d)" % tut.step)
+			main.toggle_phero()])
+		_events.append([140.0, func() -> void:
+			tut.poll()
+			main.toggle_phero()
+			_place(Room.Type.WASTE, Rect2i(41, 14, 4, 2))])
+		_events.append([150.0, func() -> void:
+			tut.poll()
+			if not args.has("skiptut"):
+				_expect(tut.step == 6, "waste chamber reached the last tutorial step (step %d)" % tut.step)
+				tut.advance()
+				_expect(not tut.running() and tut.done_once, "Finish closes the tutorial")])
+	_events.append([300.0, func() -> void:
+		var alive := c.worker_count()
+		print("[test] founding t=300: workers %d, brood %d, sugar %.1f, protein %.1f, rooms %d" % [alive, c.brood.size(), c.sugar_stock, c.protein_stock, c.rooms.size()])
+		if args.has("tutor"):
+			_expect(alive >= Config.FOUND_WORKERS, "tutorial player: colony did not shrink in 5 minutes (%d workers)" % alive)
+		else:
+			_expect(alive >= 1 and c.queen != null, "do-nothing player: colony still alive after 5 minutes (%d workers)" % alive)])
+	_setup_common_events()
 
 func _dig_line(start: Vector2i, dir: Vector2i, n: int) -> void:
 	var c := _colony()
@@ -755,4 +811,17 @@ func _ui_test() -> void:
 	await _key(KEY_3)
 	await _move_mouse(_px(Vector2i(24, 30)))
 	await _audio_shutdown()
+	# --- v6 tutorial: the Tutorial button starts it, the target button is highlighted, Skip closes it
+	var tut: Tutorial = main.tutorial
+	await _click(main.ui.tutorial_button.get_global_rect().get_center())
+	for i in 3:
+		await get_tree().process_frame
+	_expect(tut.running() and tut.visible and tut.step == 0, "Tutorial button opens the tutorial")
+	tut.advance()
+	await get_tree().process_frame
+	_expect(tut._target() == main.ui.tool_buttons[1], "dig step highlights the Dig button")
+	await _shot("tutorial")
+	await _click(tut._skip.get_global_rect().get_center())
+	await get_tree().process_frame
+	_expect(not tut.running() and not tut.visible and tut.done_once, "Skip closes the tutorial")
 	print("[ui] done: workers=%d brood=%d food=%.1f" % [c.ants.size(), c.brood.size(), c.food_stock])

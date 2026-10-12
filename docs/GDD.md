@@ -189,3 +189,13 @@ Colony: `EGG_INTERVAL`, `STORAGE_PER_CELL`, `LIFESPAN_MEAN`, `DIG_TIME`, `PREF_N
   | WebGL context lost | no | no |
 
   Native (Xvfb, GL 3.3) per-node breakdown at t=1500 (42 ants): ants 10.9k -> 3.4k primitives, overlay 2.8k -> 0.76k, food 288 -> 64.
+
+
+## v6 additions
+- **Founding start** (`Config.classic_start = false`): shaft col 40 rows 9-18 and `FOUND_QUEEN_RECT` (4x2, rows 19-20, below the flood rows).
+  `FOUND_WORKERS` 4 young workers, `FOUND_EGGS` 3 + `FOUND_LARVAE` 1 brood, `FOUND_SUGAR` / `FOUND_PROTEIN` in the queen chamber.
+- **Room fallbacks**: `Room.is_store()` / `is_nursery()` include the queen chamber (`QUEEN_FOOD_CAP`, `QUEEN_BROOD_SLOTS`).
+  Deposits go to real storage first (`_store_key`), brood prefers real nurseries (`brood_q` = quality - `QUEEN_BROOD_PENALTY`),
+  so nurses move brood out once a nursery is dug. Waste without a waste chamber goes to the surface midden (as before).
+- **Tutorial** (`Tutorial.gd`, a Control in the HUD layer): steps = [title, text, highlight, needs Next]; `_step_done()` checks dig orders,
+  planned rooms of each type, the P overlay or foraged food. `poll()` is public so the self-test can drive it.

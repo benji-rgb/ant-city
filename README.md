@@ -1,4 +1,4 @@
-# Ant City (v5) — Godot 4 side-view ant colony simulator
+# Ant City (v6) — Godot 4 side-view ant colony simulator
 
 A cross-section ant nest. You don't control individual ants: you designate **where to dig** and **which
 chambers to build**, and the colony (queen, workers, soldiers, brood) organises itself with pheromone trails,
@@ -8,10 +8,10 @@ Targets **Godot 4.3** (GL Compatibility renderer, 1280x720). Nothing here needs 
 
 ## How to run
 1. Install Godot 4.3 or newer (godotengine.org).
-2. Import / open the `ant_city_v5` folder (or `project.godot`) and press **F5** in the editor.
+2. Import / open the `ant_city_v6` folder (or `project.godot`) and press **F5** in the editor.
    - Web build: https://benji-rgb.github.io/ant-city/ (keys are browser-safe: K save, L load, Tab / ? help)
-   - CLI: `godot --path ant_city_v5`
-   - Headless smoke test: `godot --headless --path ant_city_v5 --quit-after 300`
+   - CLI: `godot --path ant_city_v6`
+   - Headless smoke test: `godot --headless --path ant_city_v6 --quit-after 300`
 
 ## Controls
 | Input | Action |
@@ -38,6 +38,17 @@ Targets **Godot 4.3** (GL Compatibility renderer, 1280x720). Nothing here needs 
 Ant colours (marker above the ant + abdomen): pink = Nurse, orange = Dig, green = Forage, olive = Clean,
 red = Soldier (guard), grey = Idle. Carried items: yellow dot = sugar, red-pink dot = protein, pale dot = larva
 food or brood, brown dot = refuse. A red dot over a larva = it is hungry. An "x" = something died, "!" = an ant saw a predator.
+
+## New in v6
+* **Claustral founding start**: a new game is just a short entrance shaft and a small queen chamber with the queen,
+  4 nanitic workers, 3 eggs + 1 larva and a small reserve (S22 P14) kept in the queen chamber. No nursery, storage or waste chamber:
+  until you build them the queen chamber doubles as a tiny store (30 food) and nursery (6 brood). Real chambers are preferred as soon as they exist.
+  The v5 layout is still available with `-- --classic` (used by the old tests).
+* **Tutorial** (7 short steps, English): welcome -> dig a tunnel -> Nursery -> Food Storage -> foragers / P trails -> Waste chamber ->
+  soldiers, threats, K save, Tab help. Steps advance on what you actually do, the relevant button pulses, **Skip tutorial** any time,
+  the **Tutorial** button (bottom right) restarts it. Offered on the first launch; completion is stored in `user://settings.cfg` (`tutorial/done`).
+* Balance: following the tutorial the colony grows steadily (self-test: 4 -> 12 workers at 5 min, 30+ at 20 min);
+  doing nothing it survives but stalls (6 brood max, food capped at 30, sugar near 0 by ~19 min).
 
 ## New in v5
 * **Home (nest) pheromone**: ants leaving the nest lay a blue home trail; returning foragers follow it (blended into the A* path

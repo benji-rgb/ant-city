@@ -116,9 +116,12 @@ func setup(g: SoilGrid) -> void:
 	move_child(food_container, 0)
 	_make_start_rooms()
 	_spawn_queen()
-	for i in Config.START_WORKERS:
-		var a := _spawn_ant(random_nest_cell(Vector2i(46, 14), 10), Ant.Caste.WORKER, true)
-		a.age = randf_range(0.0, 0.65) * a.lifespan
+	var founding := not Config.classic_start
+	for i in (Config.FOUND_WORKERS if founding else Config.START_WORKERS):
+		var at := queen_room.random_cell() if founding else random_nest_cell(Vector2i(46, 14), 10)
+		var a := _spawn_ant(at, Ant.Caste.WORKER, true)
+		# nanitic workers of a founding colony are all young
+		a.age = randf_range(0.02, 0.2 if founding else 0.65) * a.lifespan
 	_seed_brood()
 	for i in Config.FOOD_LAYOUT.size():
 		var f := FoodSource.new()
@@ -126,21 +129,31 @@ func setup(g: SoilGrid) -> void:
 		foods.append(f)
 		f.setup(self, pick_food_column(null), randf_range(Config.FOOD_AMOUNT_MIN, Config.FOOD_AMOUNT_MAX), Config.FOOD_LAYOUT[i])
 	_recount_capacity()
-	for r in rooms:
-		if r.type == Room.Type.FOOD_STORAGE:
-			r.sugar = minf(Config.START_SUGAR, r.capacity() * Config.TYPE_CAP_FRAC)
-			r.protein = minf(Config.START_PROTEIN, r.capacity() * Config.TYPE_CAP_FRAC)
-			break
+	if founding:
+		queen_room.sugar = Config.FOUND_SUGAR
+		queen_room.protein = Config.FOUND_PROTEIN
+	else:
+		for r in rooms:
+			if r.type == Room.Type.FOOD_STORAGE:
+				r.sugar = minf(Config.START_SUGAR, r.capacity() * Config.TYPE_CAP_FRAC)
+				r.protein = minf(Config.START_PROTEIN, r.capacity() * Config.TYPE_CAP_FRAC)
+				break
 	_recount_food()
 	_refresh_climate()
 	_refresh_needs()
 	for a in ants:
 		a.task = choose_task(a)
 	reset_threat_timer()
-	log_event("The colony wakes up. Press F1 for help.", "worker")
+	if founding:
+		log_event("A young queen has sealed herself in with her first workers. Dig her a home!", "queen_chamber")
+	else:
+		log_event("The colony wakes up. Press Tab for help.", "worker")
 
 # ------------------------------------------------------------------ setup helpers
 func _make_start_rooms() -> void:
+	if not Config.classic_start:
+		queen_room = _add_room(Room.Type.QUEEN_CHAMBER, Config.FOUND_QUEEN_RECT, true)
+		return
 	queen_room = _add_room(Room.Type.QUEEN_CHAMBER, Rect2i(38, 21, 5, 3), true)
 	_add_room(Room.Type.FOOD_STORAGE, Rect2i(29, 12, 5, 2), true)
 	_add_room(Room.Type.NURSERY, Rect2i(46, 14, 5, 2), true)
@@ -177,6 +190,12 @@ func _spawn_ant(at: Vector2i, caste: int, initial := false) -> Ant:
 	return a
 
 func _seed_brood() -> void:
+	if not Config.classic_start:
+		for i in Config.FOUND_EGGS:
+			_add_brood(queen_room, Brood.Stage.EGG, randf_range(0.0, Config.EGG_TIME * 0.8))
+		for i in Config.FOUND_LARVAE:
+			_add_brood(queen_room, Brood.Stage.LARVA, randf_range(0.0, Config.LARVA_TIME * 0.5))
+		return
 	var nur := first_active(Room.Type.NURSERY)
 	if nur == null:
 		return
@@ -376,20 +395,24 @@ func loose_brood_count() -> int:
 func free_nursery_slots() -> int:
 	var n := 0
 	for r in rooms:
-		if r.type == Room.Type.NURSERY and r.active:
+		if r.is_nursery():
 			n += r.free_slot_count()
 	return n
 
 ## Reserve a slot for `b` in the best nursery (other than `exclude`); false if there is no room.
+## Brood placement quality: the queen chamber is only a stop-gap nursery.
+func brood_q(r: Room) -> float:
+	return r.quality - (Config.QUEEN_BROOD_PENALTY if r.type == Room.Type.QUEEN_CHAMBER else 0.0)
+
 func _reserve_dest(b: Brood, exclude: Room, min_quality: float) -> bool:
 	var best: Room = null
 	for r in rooms:
-		if r.type != Room.Type.NURSERY or not r.active or r == exclude or r.free_slot_count() <= 0:
+		if not r.is_nursery() or r == exclude or r.free_slot_count() <= 0:
 			continue
-		if r.quality < min_quality:
+		if brood_q(r) < min_quality:
 			continue
-		if best == null or r.quality > best.quality + 0.001 \
-				or (absf(r.quality - best.quality) <= 0.001 and r.free_slot_count() > best.free_slot_count()):
+		if best == null or brood_q(r) > brood_q(best) + 0.001 \
+				or (absf(brood_q(r) - brood_q(best)) <= 0.001 and r.free_slot_count() > best.free_slot_count()):
 			best = r
 	if best == null:
 		return false
@@ -407,7 +430,7 @@ func _find_relocation() -> Brood:
 		if r == null or b.carried_by != null or b.claimed_by != null or b.in_transit or b.move_ready > time:
 			continue
 		for o in rooms:
-			if o.type == Room.Type.NURSERY and o.active and o != r and o.quality - r.quality > Config.BROOD_MOVE_MARGIN \
+			if o.is_nursery() and o != r and brood_q(o) - brood_q(r) > Config.BROOD_MOVE_MARGIN \
 					and o.free_slot_count() > 0:
 				return b
 	return null
@@ -485,7 +508,7 @@ func first_active(type: int) -> Room:
 func random_nursery_cell() -> Vector2i:
 	var list: Array[Room] = []
 	for r in rooms:
-		if r.type == Room.Type.NURSERY and r.active:
+		if r.is_nursery():
 			list.append(r)
 	if list.is_empty():
 		return Vector2i(-1, -1)
@@ -550,10 +573,10 @@ func _recount_capacity() -> void:
 		r.quality = 0.0 if r.flooded else Climate.mean_quality(r.rect.get_center().y)
 		if not r.active:
 			continue
-		if r.type == Room.Type.FOOD_STORAGE:
+		if r.is_store():
 			food_capacity += r.capacity()
-		elif r.type == Room.Type.NURSERY:
-			nursery_capacity += int(r.capacity())
+		if r.is_nursery():
+			nursery_capacity += r.brood_cap()
 
 # ------------------------------------------------------------------ digging
 func can_order_dig(c: Vector2i) -> bool:
@@ -670,7 +693,7 @@ func _recount_food() -> void:
 	var s := 0.0
 	var p := 0.0
 	for r in rooms:
-		if r.type == Room.Type.FOOD_STORAGE and r.active:
+		if r.is_store():
 			s += r.sugar
 			p += r.protein
 	sugar_stock = s
@@ -689,10 +712,10 @@ func deposit_food(amount: float, type: int, near: Vector2i) -> float:
 	var left := minf(amount, allow)
 	var order: Array[Room] = []
 	for r in rooms:
-		if r.type == Room.Type.FOOD_STORAGE and r.active:
+		if r.is_store():
 			order.append(r)
 	order.sort_custom(func(x: Room, y: Room) -> bool:
-		return _room_dist(x, near) < _room_dist(y, near))
+		return _store_key(x, near) < _store_key(y, near))
 	var stored := 0.0
 	for r in order:
 		var put := minf(left, r.capacity() - r.food())
@@ -706,6 +729,10 @@ func deposit_food(amount: float, type: int, near: Vector2i) -> float:
 		sfx("food_deposit")
 	return stored
 
+## Real storage first, the queen chamber's small reserve last.
+func _store_key(r: Room, near: Vector2i) -> int:
+	return _room_dist(r, near) + (10000 if r.type == Room.Type.QUEEN_CHAMBER else 0)
+
 func return_food(amount: float, type: int, near: Vector2i) -> void:
 	var s := deposit_food(amount, type, near)
 	total_foraged -= s   # it was only borrowed from the stock
@@ -714,7 +741,7 @@ func take_food(amount: float, type: int, near: Vector2i) -> float:
 	var left := amount
 	var order: Array[Room] = []
 	for r in rooms:
-		if r.type == Room.Type.FOOD_STORAGE and r.active and r.stock(type) > 0.0:
+		if r.is_store() and r.stock(type) > 0.0:
 			order.append(r)
 	if near.x >= 0:
 		order.sort_custom(func(x: Room, y: Room) -> bool:
@@ -737,7 +764,7 @@ func _room_dist(r: Room, c: Vector2i) -> int:
 func nearest_storage_with_food(from: Vector2i, type: int) -> Vector2i:
 	var best: Room = null
 	for r in rooms:
-		if r.type == Room.Type.FOOD_STORAGE and r.active and r.stock(type) >= Config.NURSE_FEED_COST:
+		if r.is_store() and r.stock(type) >= Config.NURSE_FEED_COST:
 			if best == null or _room_dist(r, from) < _room_dist(best, from):
 				best = r
 	if best == null:
@@ -747,8 +774,8 @@ func nearest_storage_with_food(from: Vector2i, type: int) -> Vector2i:
 func pick_storage_cell(from: Vector2i) -> Vector2i:
 	var best: Room = null
 	for r in rooms:
-		if r.type == Room.Type.FOOD_STORAGE and r.active and r.food() < r.capacity() - 0.1:
-			if best == null or _room_dist(r, from) < _room_dist(best, from):
+		if r.is_store() and r.food() < r.capacity() - 0.1:
+			if best == null or _store_key(r, from) < _store_key(best, from):
 				best = r
 	if best == null:
 		return Vector2i(-1, -1)
@@ -1030,7 +1057,7 @@ func steal_food(at: Vector2i, amount: float) -> Array:
 	if r == null or r.type != Room.Type.FOOD_STORAGE:
 		r = null
 		for o in rooms:
-			if o.type == Room.Type.FOOD_STORAGE and o.active and o.food() > 0.0:
+			if o.is_store() and o.food() > 0.0:
 				r = o
 				break
 	if r == null:

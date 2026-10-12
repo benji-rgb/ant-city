@@ -46,8 +46,19 @@ func add_stock(t: int, amount: float) -> void:
 func cell_count() -> int:
 	return rect.size.x * rect.size.y
 
+## v6: the queen chamber doubles as a small store / nursery (the colony prefers real chambers).
+func is_store() -> bool:
+	return active and (type == Type.FOOD_STORAGE or type == Type.QUEEN_CHAMBER)
+
+func is_nursery() -> bool:
+	return active and (type == Type.NURSERY or type == Type.QUEEN_CHAMBER)
+
+func brood_cap() -> int:
+	return slots.size() if type == Type.QUEEN_CHAMBER else int(capacity())
+
 func capacity() -> float:
 	match type:
+		Type.QUEEN_CHAMBER: return Config.QUEEN_FOOD_CAP
 		Type.FOOD_STORAGE: return cell_count() * Config.STORAGE_PER_CELL
 		Type.NURSERY: return float(cell_count() * Config.BROOD_PER_CELL)
 		Type.WASTE: return cell_count() * Config.WASTE_PER_CELL
@@ -61,6 +72,10 @@ func activate() -> void:
 	undug = 0
 	if type == Type.NURSERY and slots.is_empty():
 		slots.resize(cell_count() * Config.BROOD_PER_CELL)
+		for i in slots.size():
+			slots[i] = null
+	if type == Type.QUEEN_CHAMBER and slots.is_empty():
+		slots.resize(Config.QUEEN_BROOD_SLOTS)
 		for i in slots.size():
 			slots[i] = null
 
@@ -106,7 +121,7 @@ func label() -> String:
 		Type.FOOD_STORAGE: return "Storage S%.0f P%.0f /%.0f" % [sugar, protein, capacity()]
 		Type.NURSERY: return "%s %d/%d" % [n, brood_count(), int(capacity())]
 		Type.WASTE: return "%s %.0f/%.0f" % [n, waste, capacity()]
-	return n
+	return "%s  S%.0f P%.0f /%.0f  brood %d/%d" % [n, sugar, protein, capacity(), brood_count(), slots.size()]
 
 ## Compact text drawn on the chamber itself (neighbouring chambers must not overlap their labels).
 func short_label() -> String:
@@ -116,4 +131,6 @@ func short_label() -> String:
 		Type.FOOD_STORAGE: return "S%.0f P%.0f" % [sugar, protein]
 		Type.NURSERY: return "Nursery %d/%d" % [brood_count(), int(capacity())]
 		Type.WASTE: return "Waste %.0f/%.0f" % [waste, capacity()]
+	if food() >= 0.5 or brood_count() > 0:
+		return "Queen  S%.0f P%.0f" % [sugar, protein]
 	return "Queen"

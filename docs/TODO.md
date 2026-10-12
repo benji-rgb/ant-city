@@ -1,4 +1,14 @@
-# Ant City — TODO / roadmap (after v5)
+# Ant City — TODO / roadmap (after v6)
+
+## Done in v6
+- [x] Founding start (queen chamber only, nanitic workers, reserve in the queen chamber); queen chamber fallback store / nursery.
+- [x] Skippable 7-step tutorial driven by real actions, highlight, Tutorial button, settings flag, first-launch offer.
+- [x] Self-tests: founding + scripted tutorial (survives 30 min), do-nothing run, skip-tutorial run, UI test of Tutorial / Skip buttons.
+
+## Still open after v6
+- [ ] Do-nothing colonies still grow to ~14 workers before stalling: could be harsher if wanted.
+- [ ] The tiny queen chamber label overlaps when it holds food (cosmetic).
+- [ ] Tutorial has no camera step (the whole map is always visible) and no step for rain / raids.
 
 ## Done in v5
 - [x] Home pheromone (4th grid) laid by outbound ants, followed by returning ants, blended into A* weights; P overlay; saved.

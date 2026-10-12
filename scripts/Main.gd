@@ -10,6 +10,7 @@ var grid: SoilGrid
 var colony: Colony
 var overlay: Overlay
 var overlay_top: Overlay
+var tutorial: Tutorial
 var ui: GameUI
 var audio: GameAudio
 
@@ -73,6 +74,8 @@ func _step_autosave(delta: float) -> void:
 func _ready() -> void:
 	_web_setup()
 	var args := _parse_args()
+	if args.has("classic"):
+		Config.classic_start = true       # v5 layout (pre-built nursery, storage, waste) for the old tests
 	if args.has("seed"):
 		seed(int(args["seed"]))
 	else:
@@ -127,6 +130,18 @@ func _ready() -> void:
 		ui.show_modes(colony)
 	if args.has("nohelp"):
 		ui.hide_help()
+	# v6 tutorial: offered on the first launch (not in tests unless --tutorial is given)
+	tutorial = Tutorial.new()
+	tutorial.name = "Tutorial"
+	tutorial.main = self
+	var testing := args.has("selftest") or args.has("shot") or args.has("audiotest") or args.has("perf")
+	tutorial.persist = not testing
+	ui.add_child(tutorial)
+	ui.tutorial_pressed.connect(func() -> void:
+		_click()
+		tutorial.start())
+	if args.has("tutorial") or (not testing and not Config.classic_start and not Tutorial.is_done()):
+		tutorial.start.call_deferred()
 	if args.has("selftest") or args.has("shot") or args.has("audiotest") or args.has("perf"):
 		var st := load("res://scripts/SelfTest.gd").new() as Node
 		st.name = "SelfTest"
