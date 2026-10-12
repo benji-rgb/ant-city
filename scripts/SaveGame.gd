@@ -7,6 +7,19 @@ extends RefCounted
 
 const VERSION := 3
 const DEFAULT_PATH := "user://ant_city_save.json"
+const AUTO_PATH := "user://ant_city_autosave.json"   # v5: periodic autosave (web: survives a lost WebGL context)
+
+## The newer of the manual save and the autosave ("" when there is none).
+static func newest_path() -> String:
+	var best := ""
+	var best_t := -1
+	for p in [DEFAULT_PATH, AUTO_PATH]:
+		if FileAccess.file_exists(p):
+			var t := FileAccess.get_modified_time(p)
+			if t > best_t:
+				best_t = t
+				best = p
+	return best
 
 static func _f32(a: PackedFloat32Array) -> String:
 	return Marshalls.raw_to_base64(a.to_byte_array())
@@ -65,7 +78,7 @@ static func to_dict(col: Colony) -> Dictionary:
 		if a.carrying_waste and a.waste_item != null:
 			waste.append([a.cell.x, a.cell.y, a.waste_item.kind, a.waste_item.units])
 		ants.append({"cell": _v2(a.cell), "age": a.age, "life": a.lifespan, "hp": a.hp, "hunger": a.hunger,
-			"task": a.task, "caste": a.caste, "cf": a.carry_food, "ct": a.carry_type, "cn": a.carry_nurse})
+			"task": a.task, "caste": a.caste, "cf": a.carry_food, "ct": a.carry_type, "cn": a.carry_nurse, "soil": a.soil, "out": a.out_t})
 	d["ants"] = ants
 	d["waste"] = waste
 	d["queen"] = {"cell": _v2(col.queen.cell), "hunger": col.queen.hunger}
@@ -76,6 +89,13 @@ static func to_dict(col: Colony) -> Dictionary:
 	d["foods"] = foods
 	d["trails"] = [_f32(col.trails[0].a), _f32(col.trails[1].a)]
 	d["alarm"] = _f32(col.alarm.a)
+	d["home"] = _f32(col.home.a)                 # v5 (optional on load)
+	d["flood"] = _f32(col.flood)
+	d["rain"] = {"on": col.raining, "i": col.rain_intensity, "left": col.rain_left, "t": col._rain_t,
+		"n": col.rain_count, "wet": Climate.wet}
+	d["v5"] = {"homing_ok": col.homing_ok, "homing_fallback": col.homing_fallback, "soil_hauled": col.soil_hauled,
+		"soil_lost": col.soil_lost, "raids": col.raids, "food_stolen": col.food_stolen, "brood_stolen": col.brood_stolen,
+		"intruders_killed": col.intruders_killed, "flood_peak": col.flood_peak, "flood_deaths": col.flood_deaths}
 	var dig: Array = []
 	for t: DigTask in col.dig_tasks.values():
 		dig.append({"cell": _v2(t.cell), "room": room_idx.get(t.room, -1) if t.room != null else -1})
@@ -109,7 +129,7 @@ static func exists(path := DEFAULT_PATH) -> bool:
 # ------------------------------------------------------------------ load
 static func load_file(col: Colony, path := DEFAULT_PATH) -> String:
 	if not FileAccess.file_exists(path):
-		return "No save file yet (press F5 to save)."
+		return "No save file yet (press K to save)."
 	var f := FileAccess.open(path, FileAccess.READ)
 	if f == null:
 		return "Could not open the save file."
@@ -213,6 +233,8 @@ static func apply(col: Colony, d: Dictionary) -> String:
 		a.carry_food = float(ad["cf"])
 		a.carry_type = int(ad["ct"])
 		a.carry_nurse = float(ad["cn"])
+		a.soil = int(ad.get("soil", 0))
+		a.out_t = float(ad.get("out", 0.0))
 		col.ants.append(a)
 	# surface food
 	for fd in d["foods"]:
@@ -227,6 +249,25 @@ static func apply(col: Colony, d: Dictionary) -> String:
 	col.trails[0].a = _unf32(String(tr[0]))
 	col.trails[1].a = _unf32(String(tr[1]))
 	col.alarm.a = _unf32(String(d["alarm"]))
+	if d.has("home"):
+		var hm := _unf32(String(d["home"]))
+		if hm.size() == col.home.a.size():
+			col.home.a = hm
+	if d.has("flood"):
+		var fl := _unf32(String(d["flood"]))
+		if fl.size() == col.flood.size():
+			col.flood = fl
+	var rn: Dictionary = d.get("rain", {})
+	if not rn.is_empty():
+		col.raining = bool(rn["on"])
+		col.rain_intensity = float(rn["i"])
+		col.rain_left = float(rn["left"])
+		col._rain_t = float(rn["t"])
+		col.rain_count = int(rn["n"])
+		Climate.wet = float(rn["wet"])
+	var v5: Dictionary = d.get("v5", {})
+	for k in v5:
+		col.set(k, v5[k])
 	for dd in d.get("dig", []):
 		var t := DigTask.new()
 		t.cell = _c(dd["cell"])

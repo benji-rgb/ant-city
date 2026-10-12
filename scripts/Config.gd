@@ -52,9 +52,9 @@ const FORAGER_SHARE_HUNGRY := 0.55  # extra share when food is short
 const FOOD_COMFORT_MIN := 12.0
 
 # ---------------------------------------------------------------- colony / food
-const START_SUGAR := 26.0
+const START_SUGAR := 40.0         # v5: was 26 (the first minute dipped to ~13 with 10 workers)
 const START_PROTEIN := 12.0
-const SUGAR_RATE_WORKER := 0.016  # sugar / s per worker (their fuel)
+const SUGAR_RATE_WORKER := 0.014  # sugar / s per worker (their fuel)
 const SUGAR_RATE_QUEEN := 0.030
 const SUGAR_RATE_SOLDIER := 0.028
 const STORAGE_PER_CELL := 5.0     # food capacity per storage cell (sugar + protein share it)
@@ -98,6 +98,18 @@ const PHERO_FOLLOW_MIN := 0.02    # below this a cell is not "a trail"
 const PHERO_RANDOM_PICK := 0.10   # chance to ignore the trail (exploration)
 const SURFACE_TURN_PROB := 0.06   # random walk: chance of turning around each step
 
+# home / nest pheromone (v5): laid by ants on their way out, strongest near the nest
+const HOME_EVAP := 0.012          # per second: much longer lived than food trails
+const HOME_DIFFUSE := 0.06
+const HOME_MAX := 6.0
+const HOME_DEPOSIT := 0.35        # per cell at the moment of leaving the nest ...
+const HOME_DECAY_T := 25.0        # ... fading with the time spent outside (gives the gradient)
+const HOME_FOLLOW_MIN := 0.03     # below this a surface cell carries no usable home signal
+const HOME_FOLLOW_P := 0.85       # chance to take the stronger side when homing on the surface
+const HOME_GIVEUP := 25.0         # seconds of homing before falling back to A*
+const HOME_WEIGHT_K := 0.45       # A* cost of a tunnel cell = 1 / (1 + k * home), floor HOME_WEIGHT_MIN
+const HOME_WEIGHT_MIN := 0.55
+
 # ---------------------------------------------------------------- colors
 const COL_NURSE := Color(1.0, 0.55, 0.80)
 const COL_DIG := Color(1.0, 0.70, 0.15)
@@ -131,6 +143,33 @@ const THREAT_FIRST := [9999.0, 150.0, 100.0]          # seconds until the first 
 const THREAT_INTERVAL := [[9999.0, 9999.0], [190.0, 300.0], [110.0, 190.0]]   # min/max between threats
 const THREAT_LIFE := [0.0, 55.0, 80.0]
 const FEAR_RADIUS := 5                # cells at which a surface worker notices a threat
+const FLEE_CHANCE := 0.5              # v5: a worker that notices a predator only gets away this often
+const AMBUSH_AFTER := 12.0            # a spider with nothing to hunt for this long lurks at the busiest entrance
+# intruders inside the nest (rival scouts only), by threat level: chance a scout raids the nest
+const RAID_CHANCE := [0.0, 0.45, 0.8]
+const RAID_STEAL_FOOD := 5.0          # food units a raider carries off
+const RAID_SPEED := 30.0
+const WORKER_HP := 2.0                # workers can be hurt by an intruder inside the nest
+const WORKER_BITE := 0.15             # damage / s a worker deals to an adjacent intruder
+const INTRUDER_DPS := 0.6             # damage / s an intruder deals to the ant it fights
+const DEFEND_RADIUS := 1.2            # cells: ants this close fight an intruder
+
+# ---------------------------------------------------------------- soil hauling (v5)
+const SOIL_CARRY := 2                 # pellets (dug cells) a digger collects before hauling them out
+
+# ---------------------------------------------------------------- rain / flooding (v5)
+static var rain_enabled := true       # toggle: key W, --rain=0
+const RAIN_FIRST := 260.0
+const RAIN_INTERVAL := [420.0, 720.0]
+const RAIN_DURATION := [35.0, 70.0]
+const RAIN_HUMID := 0.25              # extra humidity at the surface while it rains (fades with depth)
+const RAIN_WET_DECAY := 0.006         # per second after the rain
+const FLOOD_ROWS := 7                 # tunnel cells in the top N soil rows can flood (deeper = less water)
+const FLOOD_RATE := 0.035             # per second at full rain intensity
+const FLOOD_DRAIN := 0.02
+const FLOOD_WET := 0.35               # a cell above this level is "flooded" (slow, bad for brood)
+const FLOOD_SLOW := 0.55
+const FLOOD_BROOD_DEATH := 0.004      # per second for brood lying in a flooded cell
 
 # ---------------------------------------------------------------- climate
 const TEMP_SURFACE_MEAN := 20.0

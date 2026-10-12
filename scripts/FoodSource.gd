@@ -66,7 +66,7 @@ func _draw() -> void:
 	draw_texture_rect(TEX, Rect2(-wpx * 0.5, -hpx + 2.0, wpx, hpx), false, Color(1.0, 0.95, 0.62) if type == Config.Food.SUGAR else Color(1.0, 0.62, 0.62))
 	var font := ThemeDB.fallback_font
 	var tcol: Color = Config.FOOD_COL[type]
-	draw_circle(Vector2(0, 1.0), 2.6, tcol)        # small type marker on the ground
+	Art.dot(self, Vector2(0, 1.0), 2.6, tcol)        # small type marker on the ground
 	var txt := "%d" % int(ceil(amount))
 	var tp := Vector2(-8.0, -hpx - 2.0)
 	draw_string(font, tp + Vector2(1, 1), txt, HORIZONTAL_ALIGNMENT_CENTER, 16.0, 11, Color(0, 0, 0, 0.7))

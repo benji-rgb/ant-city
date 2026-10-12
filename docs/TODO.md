@@ -1,4 +1,20 @@
-# Ant City — TODO / roadmap (after v4)
+# Ant City — TODO / roadmap (after v5)
+
+## Done in v5
+- [x] Home pheromone (4th grid) laid by outbound ants, followed by returning ants, blended into A* weights; P overlay; saved.
+- [x] Raiding rival scouts enter the nest, steal brood / food; workers + soldiers defend inside; loot recovered on kill.
+- [x] Diggers haul soil pellets to the mounds (conservation checked by the self-test).
+- [x] Gentle rain + shallow flooding (toggle `Config.rain_enabled`), brood moved deeper, HUD banners.
+- [x] Balance: early sugar, Auto soldiers on plentiful food, threats matter with soldiers Off.
+- [x] Browser-safe keys (K / L / Tab / ?), WebGL load cut ~55 % (primitives), field overlays as one texture, 60 fps cap on web, autosave + context-lost banner.
+- [x] Art batch 3 (2x sprites, empty chamber art, sound icons, 4 new sounds, OGG preferred).
+
+## Still open after v5 (be honest)
+- [ ] Mid-game sugar can still dip to ~0-5 for a minute in some seeds (recovers; tune with real playtests).
+- [ ] Raiders are usually killed before they steal anything (0 thefts in the self-test runs) - may need to be tougher at "Normal".
+- [ ] Draw calls are still ~400/frame (each ant switches between sprite and untextured shapes); a MultiMesh / atlas pass would cut it further.
+- [ ] The cause of "context lost" on the user's machine was not reproduced here (headless Chrome + SwiftShader ran 20 game-min with no loss); the fix lowers GPU load and adds autosave.
+- [ ] Predators / in-flight raids are not saved.
 
 ## Done in v4
 - [x] Audio manager (ambient surface / nest crossfade, 5 one-shots, throttling, master volume, mute, settings file), HUD indicator.
@@ -17,7 +33,7 @@
 - [x] Save / load (F5 / F9), event log, help overlay, ant animation, effect popups.
 
 ## Skipped / only partly done in v3 (be honest)
-- [ ] **Home pheromone** inside the nest: skipped. Inside tunnels ants still use A* (perfect memory). Rationale: the outdoor trail is where the
+- [x] (v5) **Home pheromone** inside the nest: was skipped in v3. Inside tunnels ants still use A* (perfect memory). Rationale: the outdoor trail is where the
       interesting behaviour is; a home gradient would need a 4th grid and a rewrite of every in-nest walk.
 - [ ] Mounds are only decoration: diggers don't physically carry soil out (no "carrying pellet" state) and mounds don't block anything.
 - [ ] Threats stay on the surface (no intruders entering the nest, no tunnel flooding).

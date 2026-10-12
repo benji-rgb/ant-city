@@ -3,7 +3,7 @@ extends Node2D
 
 enum Tool { SELECT, DIG, NURSERY, STORAGE, WASTE }
 
-const HELP := "Keys: 1-5 tools | Space pause | -/+ speed | P trails | H climate | F5 save | F9 load | F1 help | M mute | [ ] volume | R rotate chamber\nLeft-drag with Dig paints orders, right-drag cancels. Click an ant, larva or chamber to inspect it."
+const HELP := "Keys: 1-5 tools | Space pause | -/+ speed | P trails | H climate | K save | L load | Tab or ? help | M mute | [ ] volume | R rotate chamber\nLeft-drag with Dig paints orders, right-drag cancels. Click an ant, larva or chamber to inspect it."
 const ROOM_TOOLS := {Tool.NURSERY: Room.Type.NURSERY, Tool.STORAGE: Room.Type.FOOD_STORAGE, Tool.WASTE: Room.Type.WASTE}
 
 var grid: SoilGrid
@@ -40,7 +40,38 @@ var _selftest: Node = null
 var _mouse_world := Vector2(-1000, -1000)   # last known mouse position in world coordinates
 var _mouse_seen := false
 
+## v5 web hardening: cap the frame rate (120/144 Hz screens otherwise draw 2x as often), autosave
+## every AUTOSAVE_S of play, and if the browser drops the WebGL context show a clear message (Godot
+## 4.3 cannot recover the context; reloading and pressing L restores the autosave).
+const AUTOSAVE_S := 120.0
+var _autosave_t := AUTOSAVE_S
+
+func _web_setup() -> void:
+	if not OS.has_feature("web"):
+		return
+	Engine.max_fps = 60
+	JavaScriptBridge.eval("""
+(function(){
+  var c = document.getElementById('canvas'); if (!c || c._antcityHooked) return; c._antcityHooked = true;
+  c.addEventListener('webglcontextlost', function(e){
+    var d = document.createElement('div');
+    d.style.cssText = 'position:fixed;left:0;top:0;right:0;padding:16px;background:#3a1f12;color:#fff;font:16px sans-serif;z-index:99;text-align:center';
+    d.innerHTML = 'The browser stopped the game graphics (WebGL context lost). Your colony is autosaved every 2 minutes: <b>reload the page and press L</b> to continue. <button onclick="location.reload()">Reload</button>';
+    document.body.appendChild(d);
+  }, false);
+})();
+""", true)
+
+func _step_autosave(delta: float) -> void:
+	if _selftest != null or paused:
+		return
+	_autosave_t -= delta
+	if _autosave_t <= 0.0:
+		_autosave_t = AUTOSAVE_S
+		SaveGame.save(colony, SaveGame.AUTO_PATH)
+
 func _ready() -> void:
+	_web_setup()
 	var args := _parse_args()
 	if args.has("seed"):
 		seed(int(args["seed"]))
@@ -96,7 +127,7 @@ func _ready() -> void:
 		ui.show_modes(colony)
 	if args.has("nohelp"):
 		ui.hide_help()
-	if args.has("selftest") or args.has("shot") or args.has("audiotest"):
+	if args.has("selftest") or args.has("shot") or args.has("audiotest") or args.has("perf"):
 		var st := load("res://scripts/SelfTest.gd").new() as Node
 		st.name = "SelfTest"
 		st.set("main", self)
@@ -106,7 +137,13 @@ func _ready() -> void:
 
 func _parse_args() -> Dictionary:
 	var d := {}
-	for a in OS.get_cmdline_user_args():
+	var user_args := Array(OS.get_cmdline_user_args())
+	if OS.has_feature("web"):
+		# web build: options come from the page URL, e.g. index.html?perf=600&ffwd=300&speed=4
+		var q := str(JavaScriptBridge.eval("window.location.search", true)).trim_prefix("?")
+		for part in q.split("&", false):
+			user_args.append("--" + part)
+	for a in user_args:
 		var s := String(a).trim_prefix("--")
 		var kv := s.split("=", true, 1)
 		d[kv[0]] = kv[1] if kv.size() > 1 else "1"
@@ -126,6 +163,7 @@ func _process(delta: float) -> void:
 		if n >= Config.MAX_STEPS_PER_FRAME:
 			_accum = 0.0
 	_update_cursor()
+	_step_autosave(delta)
 	if _mouse_seen:
 		# ambience follows what the player looks at: surface above the ground line, nest below
 		var gy := float(Config.SURFACE_ROW * Config.CELL)
@@ -199,7 +237,10 @@ func save_game() -> void:
 func load_game() -> void:
 	_click()
 	_clear_selection()
-	var err := SaveGame.load_file(colony)
+	var path := SaveGame.newest_path()
+	var err := SaveGame.load_file(colony, path if path != "" else SaveGame.DEFAULT_PATH)
+	if err == "" and path == SaveGame.AUTO_PATH:
+		colony.log_event("Loaded the autosave (it was newer than your save).", "load")
 	if err != "":
 		colony.log_event("Load failed: " + err, "alert")
 	ui.show_modes(colony)
@@ -210,6 +251,12 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventMouse:
 		_mouse_world = get_viewport().get_canvas_transform().affine_inverse() * event.position
 		_mouse_seen = true
+	# Help is caught here so Tab is not eaten by GUI focus navigation (F1 opens browser help on the web).
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode in [KEY_TAB, KEY_QUESTION, KEY_SLASH]:
+			_click()
+			ui.toggle_help()
+			get_viewport().set_input_as_handled()
 
 func _mouse_pos() -> Vector2:
 	return _mouse_world if _mouse_seen else get_global_mouse_position()
@@ -220,14 +267,11 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_SPACE: toggle_pause()
 			KEY_P: toggle_phero()
 			KEY_H: toggle_climate()
-			KEY_F1:
-				_click()
-				ui.toggle_help()
 			KEY_M: toggle_mute()
 			KEY_BRACKETLEFT: change_volume(-0.1)
 			KEY_BRACKETRIGHT: change_volume(0.1)
-			KEY_F5: save_game()
-			KEY_F9: load_game()
+			KEY_K: save_game()      # web-safe (F5 reloads the page in a browser)
+			KEY_L: load_game()
 			KEY_1: set_tool(Tool.SELECT)
 			KEY_2: set_tool(Tool.DIG)
 			KEY_3: set_tool(Tool.NURSERY)

@@ -13,6 +13,7 @@ var protein: float = 0.0
 var waste: float = 0.0        # WASTE contents (units)
 var slots: Array = []         # NURSERY: Array of Brood (or null)
 var reserved: Dictionary = {} # NURSERY: slot index -> Brood that is being carried here
+var flooded := false
 var quality: float = 1.0      # mean brood comfort (0..1) from the microclimate, refreshed by Colony
 
 static func type_name(t: int) -> String:

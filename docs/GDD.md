@@ -162,3 +162,30 @@ Colony: `EGG_INTERVAL`, `STORAGE_PER_CELL`, `LIFESPAN_MEAN`, `DIG_TIME`, `PREF_N
 * Soldiers off + Normal threats: 11 threats in 30 min, none killed, only 1 ant lost (the foragers flee, but the colony forages less while the alarm is up).
 * No food at all: the colony starves out within ~10 sim minutes (measured: all workers dead by t=600 s). No protein pile at all: no eggs are laid and the colony ages out (expected, by design).
 * Save/load round trip: map, rooms, ants, brood, stocks, waste and all three pheromone grids restored bit-identically (checked by hashing) and 160 s of further simulation ran cleanly.
+
+
+## v5 additions
+- **Home pheromone** (`Colony.home`, PheroGrid): outbound ants deposit `HOME_DEPOSIT` decaying with time out of the nest
+  (`HOME_DECAY_T`). Returning ants above `HOME_FOLLOW_MIN` follow the gradient with probability `HOME_FOLLOW_P`, give up after
+  `HOME_GIVEUP` s and fall back to A*. In tunnels the A* weights are lowered on strong home trail (`HOME_WEIGHT_K/MIN`) and raised on flooded cells.
+- **Raids**: `RAID_CHANCE` of rival scouts are raiders. Phases: enter via the busiest entrance -> path to brood / storage -> steal
+  (`RAID_STEAL_FOOD` or one brood) -> leave. Workers within `DEFEND_RADIUS` bite (`WORKER_BITE`, max 3 per intruder), soldiers hunt
+  them; intruders bite back (`INTRUDER_DPS`). Killed raiders drop their loot (brood is rescued).
+- **Soil**: `complete_dig` gives the digger a pellet (`SOIL_CARRY`), carried (slower) to the mound of the nearest entrance.
+- **Rain**: first after `RAIN_FIRST`, then every ~`RAIN_INTERVAL`, lasting `RAIN_DURATION`. Raises humidity via `Climate.wet`;
+  heavy rain fills the top `FLOOD_ROWS` open cells (`FLOOD_RATE`, drains with `FLOOD_DRAIN`); flooded rooms have quality 0, brood
+  there grows slower and may die (`FLOOD_BROOD_DEATH`), nurses move it.
+- **Rendering budget (web)**: per frame ~8-9k primitives / ~390 draw calls with 40 ants and the trails overlay (v4: ~19-21k / ~400).
+  Before/after in headless Chrome + SwiftShader (WebGL2), seed 3, ffwd 600 s then 270 s real at 4x with the overlays cycling:
+
+  | | v4 | v5 |
+  |---|---|---|
+  | primitives / frame | 16.5k - 19.7k | 8.2k - 9.2k |
+  | draw calls / frame | 345 - 418 | 342 - 404 |
+  | objects (start -> end) | 1543 -> 1553 | 1545 -> 1558 |
+  | resources | 49 flat | 51 flat |
+  | texture memory | 10.4 -> 10.5 MB | 10.4 -> 10.6 MB |
+  | video memory | 20.8 -> 23.1 MB | 20.7 -> 20.9 MB |
+  | WebGL context lost | no | no |
+
+  Native (Xvfb, GL 3.3) per-node breakdown at t=1500 (42 ants): ants 10.9k -> 3.4k primitives, overlay 2.8k -> 0.76k, food 288 -> 64.

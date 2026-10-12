@@ -12,6 +12,8 @@ const N_TASKS := 6
 var grid: SoilGrid
 var trails: Array[PheroGrid] = []       # one food trail per food type
 var alarm: PheroGrid
+var home: PheroGrid                     # v5: home / nest trail laid by outbound ants
+var flood := PackedFloat32Array()       # v5: water level per cell (0..1)
 var rooms: Array[Room] = []
 var queen_room: Room = null
 var ants: Array[Ant] = []               # every ant except the queen (workers + soldiers)
@@ -73,6 +75,24 @@ var threats_killed := 0
 var brood_moved := 0
 var brood_relocated := 0
 var food_dropped_total := 0.0
+# v5 statistics / state
+var homing_ok := 0                      # loaded foragers that found an entrance by the home trail
+var homing_fallback := 0                # ... that gave up and used A*
+var soil_hauled := 0
+var soil_lost := 0
+var raids := 0
+var food_stolen := 0.0
+var brood_stolen := 0
+var intruders_killed := 0
+var raining := false
+var rain_intensity := 0.0
+var rain_left := 0.0
+var _rain_t := 0.0
+var rain_count := 0
+var flood_peak := 0.0
+var flood_deaths := 0
+var flooded_cells := 0
+var _rain_tick := 0.0
 var search_log: Array[Vector2] = []     # (pickup index within the source's life, seconds spent searching)
 
 var ant_container: Node2D
@@ -82,6 +102,10 @@ func setup(g: SoilGrid) -> void:
 	grid = g
 	trails = [PheroGrid.new(grid), PheroGrid.new(grid)]
 	alarm = PheroGrid.new(grid, 0.10, 0.12, 3.0)
+	home = PheroGrid.new(grid, Config.HOME_EVAP, Config.HOME_DIFFUSE, Config.HOME_MAX)
+	flood.resize(Config.GRID_W * Config.GRID_H)
+	flood.fill(0.0)
+	_rain_t = Config.RAIN_FIRST * randf_range(0.8, 1.2)
 	row_rate.resize(Config.GRID_H)
 	ant_container = Node2D.new()
 	ant_container.name = "Ants"
@@ -201,6 +225,8 @@ func sim_step(dt: float) -> void:
 	for t in trails:
 		t.step(dt)
 	alarm.step(dt)
+	home.step(dt)
+	_step_rain(dt)
 	for f in foods:
 		f.step(dt)
 	for a in ants.duplicate():
@@ -264,6 +290,13 @@ func _brood_rate(b: Brood) -> float:
 
 func _step_brood(b: Brood, dt: float) -> void:
 	var m := _brood_rate(b)
+	if not b.in_transit and flooded_cells > 0 and is_flooded(b.cell()):
+		m *= 0.3
+		if randf() < Config.FLOOD_BROOD_DEATH * dt:
+			flood_deaths += 1
+			log_event("A %s drowned in a flooded chamber." % b.stage_name().to_lower(), "climate")
+			_remove_brood(b, true)
+			return
 	if b.stage != Brood.Stage.PUPA and hygiene < Config.HYGIENE_BAD:
 		var p := (Config.HYGIENE_BAD - hygiene) / Config.HYGIENE_BAD * Config.BROOD_DISEASE_RATE * dt
 		if randf() < p:
@@ -276,6 +309,7 @@ func _step_brood(b: Brood, dt: float) -> void:
 			b.t += dt * m
 			if b.t >= Config.EGG_TIME:
 				b.stage = Brood.Stage.LARVA
+				sfx("egg_hatch")
 				b.t = 0.0
 				b.fed = 0.8
 		Brood.Stage.LARVA:
@@ -513,7 +547,7 @@ func _recount_capacity() -> void:
 	food_capacity = 0.0
 	nursery_capacity = 0
 	for r in rooms:
-		r.quality = Climate.mean_quality(r.rect.get_center().y)
+		r.quality = 0.0 if r.flooded else Climate.mean_quality(r.rect.get_center().y)
 		if not r.active:
 			continue
 		if r.type == Room.Type.FOOD_STORAGE:
@@ -585,13 +619,14 @@ func dig_access_cell(target: Vector2i, from: Vector2i) -> Vector2i:
 				best = c
 	return best
 
-func complete_dig(t: DigTask) -> void:
+## Returns true if a cell was excavated (the digger then carries one soil pellet out).
+func complete_dig(t: DigTask) -> bool:
 	dig_tasks.erase(t.cell)
 	t.claimed_by = null
+	var dug := false
 	if grid.dig(t.cell):
+		dug = true
 		total_dug += 1
-		var ex := nearest_entrance_x(t.cell)
-		mounds[ex] = float(mounds.get(ex, 0.0)) + 1.0
 		add_fx(grid.cell_center(t.cell), "dust", "")
 		sfx("dig")
 	for r in rooms:
@@ -601,6 +636,21 @@ func complete_dig(t: DigTask) -> void:
 				r.activate()
 				_recount_capacity()
 				log_event("%s finished." % Room.type_name(r.type), Room.icon_name(r.type))
+				sfx("chamber_complete")
+	return dug
+
+## Hauled soil arrives on the surface: the mound beside entrance column `x` grows.
+func add_mound(x: int, n: int) -> void:
+	mounds[x] = float(mounds.get(x, 0.0)) + float(n)
+	soil_hauled += n
+
+func is_entrance_column(x: int) -> bool:
+	return grid.get_cell(Vector2i(x, Config.FIRST_SOIL_ROW)) == SoilGrid.Cell.TUNNEL
+
+func is_flooded(c: Vector2i) -> bool:
+	if not SoilGrid.in_bounds(c):
+		return false
+	return flood[c.y * Config.GRID_W + c.x] > Config.FLOOD_WET
 
 func nearest_entrance_x(from: Vector2i) -> int:
 	var best := 40
@@ -652,6 +702,8 @@ func deposit_food(amount: float, type: int, near: Vector2i) -> float:
 			stored += put
 	_recount_food()
 	total_foraged += stored
+	if stored > 0.0:
+		sfx("food_deposit")
 	return stored
 
 func return_food(amount: float, type: int, near: Vector2i) -> void:
@@ -886,8 +938,9 @@ func soldier_target() -> int:
 	var t := 0
 	if time - last_threat_t < 300.0:
 		t = 3 + mini(threat_count, 4)
-	var plentiful := food_capacity > 0.0 and food_stock > 0.7 * food_capacity \
-		and protein_stock >= 0.5 * comfort_of() and workers >= 12
+	# v5: "plentiful" = both stocks comfortable (the old test, 70 % of the whole storage, was almost never true
+	# because one type may only fill 70 % of the storage and foragers slow down once comfortable)
+	var plentiful := sugar_stock >= comfort_of() and protein_stock >= 0.6 * comfort_of() and workers >= 12
 	if plentiful:
 		t = maxi(t, 1 + workers / 12)
 	return clampi(t, 0, Config.SOLDIER_MAX)
@@ -922,11 +975,100 @@ func spawn_threat(kind: int) -> Threat:
 	var left := randf() < 0.5
 	th.setup(self, kind, 30.0 if left else Config.GRID_W * Config.CELL - 30.0, Config.THREAT_LIFE[maxi(1, Config.threat_level)])
 	threats.append(th)
+	if kind == Threat.Kind.RIVAL and randf() < Config.RAID_CHANCE[clampi(Config.threat_level, 0, 2)]:
+		th.raider = true
 	last_threat_t = time
 	threat_count += 1
 	log_event("WARNING: a %s appeared on the %s side of the surface!" % [Threat.NAMES[kind], "left" if left else "right"], "threat_spider")
 	sfx("threat_warning")
 	return th
+
+# ------------------------------------------------------------------ raids (v5)
+func nearest_entrance_px(x_px: float) -> int:
+	var best := -1
+	var bd := INF
+	for e in grid.entrances():
+		var d := absf((e.x + 0.5) * Config.CELL - x_px)
+		if d < bd:
+			bd = d
+			best = e.x
+	return best
+
+## Entrance with the most food-trail traffic around it (where a predator would wait).
+func busiest_entrance_x() -> int:
+	var best := -1
+	var bv := -1.0
+	for e in grid.entrances():
+		var v := home.get_at(e) + trails[0].get_at(e) + trails[1].get_at(e)
+		if v > bv:
+			bv = v
+			best = e.x
+	return best
+
+## A cell inside a storage room with food, or a nursery cell holding brood. {} if none.
+func raid_target(prefer_food: bool) -> Dictionary:
+	var food_cell := Vector2i(-1, -1)
+	var brood_cell := Vector2i(-1, -1)
+	for r in rooms:
+		if not r.active:
+			continue
+		if r.type == Room.Type.FOOD_STORAGE and r.food() >= 1.0 and food_cell.x < 0:
+			food_cell = r.random_cell()
+		elif r.type == Room.Type.NURSERY and r.brood_count() > 0 and brood_cell.x < 0:
+			for i in r.slots.size():
+				if r.slots[i] != null:
+					brood_cell = r.slot_cell(i)
+					break
+	if prefer_food and food_cell.x >= 0 or brood_cell.x < 0 and food_cell.x >= 0:
+		return {"kind": "food", "cell": food_cell}
+	if brood_cell.x >= 0:
+		return {"kind": "brood", "cell": brood_cell}
+	return {}
+
+func steal_food(at: Vector2i, amount: float) -> Array:
+	var r := room_at(at)
+	if r == null or r.type != Room.Type.FOOD_STORAGE:
+		r = null
+		for o in rooms:
+			if o.type == Room.Type.FOOD_STORAGE and o.active and o.food() > 0.0:
+				r = o
+				break
+	if r == null:
+		return [0.0, 0]
+	var t := Config.Food.SUGAR if r.sugar >= r.protein else Config.Food.PROTEIN
+	var got := minf(amount, r.stock(t))
+	r.add_stock(t, -got)
+	_recount_food()
+	food_stolen += got
+	return [got, t]
+
+func steal_brood(at: Vector2i) -> Dictionary:
+	var best: Brood = null
+	var bd := 1 << 30
+	for b in brood:
+		if b.in_transit or b.carried_by != null:
+			continue
+		var d := absi(b.cell().x - at.x) + absi(b.cell().y - at.y)
+		if d < bd:
+			bd = d
+			best = b
+	if best == null or bd > 3:
+		return {}
+	var info := {"stage": best.stage, "caste": best.caste, "t": best.t, "fed": best.fed}
+	_remove_brood(best, false)
+	return info
+
+## An intruder carrying brood was killed: the brood lies loose where it fell, nurses will fetch it.
+func rescue_brood(info: Dictionary, at: Vector2i) -> void:
+	var b := Brood.new()
+	b.uid = next_uid
+	next_uid += 1
+	b.stage = int(info.get("stage", 0))
+	b.caste = int(info.get("caste", 0))
+	b.t = float(info.get("t", 0.0))
+	b.fed = float(info.get("fed", 0.5))
+	b.loose_cell = at
+	brood.append(b)
 
 func remove_threat(th: Threat) -> void:
 	if th in threats:
@@ -935,10 +1077,40 @@ func remove_threat(th: Threat) -> void:
 			threats_killed += 1
 		th.queue_free()
 
+## Nearest intruder inside the nest (Euclidean, px), or null.
+func nearest_intruder(p: Vector2, max_px: float) -> Threat:
+	var best: Threat = null
+	var bd := max_px
+	for th in threats:
+		if not th.inside:
+			continue
+		var d := th.position.distance_to(p)
+		if d < bd:
+			bd = d
+			best = th
+	return best
+
+func intruder_count() -> int:
+	var n := 0
+	for th in threats:
+		if th.inside:
+			n += 1
+	return n
+
+func defenders_of(th: Threat) -> int:
+	var n := 0
+	for a in ants:
+		if a.fight_target == th:
+			n += 1
+	return n
+
+## Surface threats only (intruders inside the nest are handled by nearest_intruder).
 func nearest_threat(x_px: float, max_px: float) -> Threat:
 	var best: Threat = null
 	var bd := max_px
 	for th in threats:
+		if th.inside:
+			continue
 		var d := absf(th.position.x - x_px)
 		if d < bd:
 			bd = d
@@ -950,6 +1122,87 @@ func note_threat_seen(th: Threat) -> void:
 
 func alarm_active() -> bool:
 	return alarm.peak > Config.ALARM_ACTIVE
+
+# ------------------------------------------------------------------ rain & flooding (v5)
+func _step_rain(dt: float) -> void:
+	if raining:
+		rain_left -= dt
+		Climate.wet = minf(1.0, Climate.wet + dt * 0.05 * rain_intensity)
+		if rain_left <= 0.0 or not Config.rain_enabled:
+			raining = false
+			log_event("The rain stops; the water drains away.", "climate")
+	else:
+		Climate.wet = maxf(0.0, Climate.wet - dt * Config.RAIN_WET_DECAY)
+		if Config.rain_enabled:
+			_rain_t -= dt
+			if _rain_t <= 0.0:
+				start_rain(randf_range(0.5, 1.0))
+	_rain_tick -= dt
+	if _rain_tick <= 0.0:
+		_rain_tick = 0.5
+		_update_flood(0.5)
+
+func start_rain(intensity: float, duration := -1.0) -> void:
+	raining = true
+	rain_intensity = clampf(intensity, 0.05, 1.0)
+	rain_left = duration if duration > 0.0 else randf_range(Config.RAIN_DURATION[0], Config.RAIN_DURATION[1])
+	rain_count += 1
+	_rain_t = randf_range(Config.RAIN_INTERVAL[0], Config.RAIN_INTERVAL[1]) + rain_left
+	log_event("It starts to rain%s - shallow tunnels may flood." % (" heavily" if rain_intensity > 0.8 else ""), "climate")
+
+func reset_rain_timer() -> void:
+	_rain_t = Config.RAIN_FIRST * randf_range(0.8, 1.2)
+
+@warning_ignore("integer_division")
+func _update_flood(h: float) -> void:
+	var n := 0
+	var any_water := false
+	for i in grid.walk_idx:
+		var y := i / Config.GRID_W
+		if y <= Config.SURFACE_ROW:
+			continue
+		var d := y - Config.FIRST_SOIL_ROW
+		var target := 0.0
+		if raining and d < Config.FLOOD_ROWS:
+			target = clampf(rain_intensity * (1.15 - float(d) / Config.FLOOD_ROWS), 0.0, 1.0)
+		var v := flood[i]
+		if v < target:
+			v = minf(target, v + Config.FLOOD_RATE * rain_intensity * h)
+		elif v > target:
+			v = maxf(target, v - Config.FLOOD_DRAIN * h)
+		flood[i] = v
+		if v > 0.0:
+			any_water = true
+		if v > Config.FLOOD_WET:
+			n += 1
+		flood_peak = maxf(flood_peak, v)
+	flooded_cells = n
+	if any_water or n > 0 or raining:
+		_apply_flood_quality()
+
+## Flooded rooms count as the worst possible brood chamber, so nurses carry the brood out.
+func _apply_flood_quality() -> void:
+	for r in rooms:
+		var wet := false
+		if r.active:
+			for y in range(r.rect.position.y, r.rect.end.y):
+				for x in range(r.rect.position.x, r.rect.end.x):
+					if flood[y * Config.GRID_W + x] > Config.FLOOD_WET:
+						wet = true
+		r.flooded = wet
+		r.quality = 0.0 if wet else Climate.mean_quality(r.rect.get_center().y)
+
+## A* prefers tunnels with a strong home trail (emergent highways) and avoids flooded cells.
+@warning_ignore("integer_division")
+func _refresh_path_weights() -> void:
+	for i in grid.walk_idx:
+		var y := i / Config.GRID_W
+		if y <= Config.SURFACE_ROW:
+			continue
+		var w := maxf(Config.HOME_WEIGHT_MIN, 1.0 / (1.0 + Config.HOME_WEIGHT_K * home.a[i]))
+		if flood[i] > Config.FLOOD_WET:
+			w *= 2.0
+		grid.astar.set_point_weight_scale(Vector2i(i % Config.GRID_W, y), w)
 
 # ------------------------------------------------------------------ microclimate
 func _refresh_climate() -> void:
@@ -1038,6 +1291,7 @@ func _refresh_task_counts() -> void:
 		task_counts[a.task] += 1
 
 func _refresh_needs() -> void:
+	_refresh_path_weights()
 	need_hungry = 0
 	need_move = loose_brood_count()
 	if _find_relocation() != null:
@@ -1153,8 +1407,16 @@ func clear_world() -> void:
 	for t in trails:
 		t.clear()
 	alarm.clear()
+	home.clear()
+	flood.fill(0.0)
+	raining = false
+	rain_intensity = 0.0
+	rain_left = 0.0
+	Climate.wet = 0.0
 
 func after_load() -> void:
+	home.reset_step()
+	_apply_flood_quality()
 	for t in trails:
 		t.reset_step()
 	alarm.reset_step()

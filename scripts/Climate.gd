@@ -16,8 +16,11 @@ static func temp(row: int, time: float) -> float:
 	var season := sin(TAU * time / (Config.DAY_LENGTH * Config.SEASON_DAYS))
 	return mean_temp(row) + damp * (Config.TEMP_AMP * day + Config.TEMP_SEASON_AMP * season)
 
+static var wet := 0.0      # v5: 0..1 how wet the soil is after rain (set by Colony)
+
 static func humidity(row: int) -> float:
-	return Config.HUMID_SURFACE + Config.HUMID_GAIN * (1.0 - exp(-depth(row) / Config.HUMID_SCALE))
+	var h := Config.HUMID_SURFACE + Config.HUMID_GAIN * (1.0 - exp(-depth(row) / Config.HUMID_SCALE))
+	return minf(1.0, h + wet * Config.RAIN_HUMID * exp(-depth(row) / Config.HUMID_SCALE))
 
 ## 0..1 how comfortable the brood is at this temperature / humidity.
 static func quality(t: float, h: float) -> float:

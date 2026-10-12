@@ -1,4 +1,4 @@
-# Ant City (v4) — Godot 4 side-view ant colony simulator
+# Ant City (v5) — Godot 4 side-view ant colony simulator
 
 A cross-section ant nest. You don't control individual ants: you designate **where to dig** and **which
 chambers to build**, and the colony (queen, workers, soldiers, brood) organises itself with pheromone trails,
@@ -8,10 +8,10 @@ Targets **Godot 4.3** (GL Compatibility renderer, 1280x720). Nothing here needs 
 
 ## How to run
 1. Install Godot 4.3 or newer (godotengine.org).
-2. Import / open the `ant_city_v4` folder (or `project.godot`) and press **F5** in the editor
-   (inside the running game F5 is "save", see below).
-   - CLI: `godot --path ant_city_v4`
-   - Headless smoke test: `godot --headless --path ant_city_v4 --quit-after 300`
+2. Import / open the `ant_city_v5` folder (or `project.godot`) and press **F5** in the editor.
+   - Web build: https://benji-rgb.github.io/ant-city/ (keys are browser-safe: K save, L load, Tab / ? help)
+   - CLI: `godot --path ant_city_v5`
+   - Headless smoke test: `godot --headless --path ant_city_v5 --quit-after 300`
 
 ## Controls
 | Input | Action |
@@ -25,10 +25,10 @@ Targets **Godot 4.3** (GL Compatibility renderer, 1280x720). Nothing here needs 
 | Select tool: **click** an ant / brood / chamber | Inspect it in the top-right panel |
 | **Space** | Pause |
 | **- / +** or 1x 2x 4x buttons | Simulation speed |
-| **P** | Pheromone overlay (yellow = sugar trail, pink = protein trail, red = alarm) |
+| **P** | Pheromone overlay (yellow = sugar trail, pink = protein trail, blue = home/nest trail, red = alarm; flooded cells are always shown in blue) |
 | **H** | Climate overlay (temperature tint per depth, green cells = good for brood; hover shows the numbers) |
-| **F5 / F9** (or the Save / Load buttons) | Save / load the colony to `user://ant_city_save.json` |
-| **F1** | Help overlay (also shown for the first 25 s) |
+| **K / L** (or the Save / Load buttons) | Save / load the colony (`user://ant_city_save.json`). L loads the newer of your save and the 2-minute autosave |
+| **Tab** or **?** | Help overlay (also shown for the first 25 s) |
 | **Soldiers: Auto / Off / Max** button | How many soldiers the queen raises |
 | **Threats: Off / Gentle / Normal** button | Predator frequency (difficulty) |
 | **M** / sound button (bottom-right) | Mute / unmute (HUD shows `Sound 60% [M]` or `MUTED [M]`) |
@@ -38,6 +38,37 @@ Targets **Godot 4.3** (GL Compatibility renderer, 1280x720). Nothing here needs 
 Ant colours (marker above the ant + abdomen): pink = Nurse, orange = Dig, green = Forage, olive = Clean,
 red = Soldier (guard), grey = Idle. Carried items: yellow dot = sugar, red-pink dot = protein, pale dot = larva
 food or brood, brown dot = refuse. A red dot over a larva = it is hungry. An "x" = something died, "!" = an ant saw a predator.
+
+## New in v5
+* **Home (nest) pheromone**: ants leaving the nest lay a blue home trail; returning foragers follow it (blended into the A* path
+  weights in tunnels, with A* as the fallback when the trail is lost). Shown in the P overlay, saved / loaded.
+* **Intruders inside the nest**: some rival scouts are *raiders* that slip in through an entrance, go for brood or storage,
+  steal and run. Nearby workers bite back, soldiers hunt them inside the tunnels; killing a raider drops the loot.
+  Gentle by default; frequency follows the Threats setting.
+* **Soil hauling**: diggers carry each dug pellet up to the surface; the mounds grow only from hauled soil
+  (self-test checks soil dug = hauled + lost + carried).
+* **Rain & flooding (gentle, `Config.rain_enabled`)**: occasional rain raises humidity; heavy rain floods shallow cells
+  (slows ants, brood development; nurses move brood deeper). HUD banners for rain / flooding / intruders.
+* **Balance**: more starting sugar, cheaper worker upkeep; Auto soldiers also come when food is plentiful; with soldiers Off the
+  surface predators now do kill careless foragers (fewer flee, spiders lurk at busy entrances).
+* **Art batch 3**: 2x sprites (worker / rival 48x30, soldier 64x36, queen 96x48, spider 72x48) drawn at 0.5x (queen 0.48x)
+  with 1.5x code legs / antennae; empty queen / storage chamber backdrops; sound on / off icon; new sounds `ant_death`,
+  `egg_hatch`, `food_deposit`, `chamber_complete` (throttled). OGG is preferred over WAV (ambient OGG set to loop).
+* **Web performance ("WebGL context lost" fix)**: see *Web build notes* below.
+
+## Web build notes (v5)
+v4 drew ~19-21k primitives per frame (every ant / brood dot was a 64-segment `draw_circle`, pheromone and climate overlays
+were thousands of `draw_rect` per frame). v5:
+- dots are 10-sided polygons (`Art.dot`), the 12 leg segments of an ant are 2 batched `draw_multiline` calls;
+- the pheromone / climate / flood overlays are ONE 80x45 `ImageTexture` updated in place (`ImageTexture.update`) at 6 Hz and
+  drawn scaled up by a single Sprite2D (nearest filter);
+- the soil is a cached texture re-uploaded only after a dig (at most once per frame);
+- frame rate capped at 60 fps on the web; effects capped, sound players pooled (6), no per-frame allocation of nodes / textures;
+- an autosave every 2 minutes and a page banner if the browser still drops the WebGL context (Godot 4.3 cannot restore it:
+  reload and press L).
+Measured with `?perf=270&ffwd=600&speed=4&overlays=1` in headless Chrome (see `docs/GDD.md`): primitives per frame
+18.6-19.7k (v4) -> 8.2-9.2k (v5); objects, resources, texture memory flat over 20 game minutes in both.
+Perf probe: `godot --path . -- --ffwd=1500 --speed=4 --overlays --perf=100 [--breakdown]`, or on the web `index.html?perf=120&speed=4`.
 
 ## What's in the game
 * **Soil grid** (80x45 cells of 16 px), digging by dig orders, `AStarGrid2D` over tunnels + surface row.
@@ -123,7 +154,7 @@ xvfb-run -a godot --path . --rendering-driver opengl3 -- --shot=out --ffwd=60 --
 
 ## Resumen en español
 Hormiguero en corte lateral. Tú diseñas dónde excavar (*Dig*) y qué cámaras construir (*Nursery*, *Storage*, *Waste*);
-la colonia se organiza sola. Novedades de la v4: gráficos (hormigas, cielo, cámaras, iconos) y sonido (ambiente, efectos, tecla **M** para silenciar, **[ ]** volumen). Novedades de la v3: la reina pone los huevos en su cámara y las nodrizas los llevan a la
+la colonia se organiza sola. Novedades de la v5: feromona de regreso al nido (azul en P), intrusos que entran al nido, las excavadoras sacan la tierra al montículo, lluvia e inundaciones suaves, y teclas aptas para navegador: **K** guardar, **L** cargar, **Tab** o **?** ayuda. Novedades de la v4: gráficos (hormigas, cielo, cámaras, iconos) y sonido (ambiente, efectos, tecla **M** para silenciar, **[ ]** volumen). Novedades de la v3: la reina pone los huevos en su cámara y las nodrizas los llevan a la
 guardería (o a la mejor por clima); hay dos tipos de comida (azúcar para las obreras, proteína para huevos y larvas);
 las limpiadoras llevan basura y cadáveres a la cámara de desechos; soldados que patrullan las entradas; arañas y
 exploradoras rivales que matan hormigas en la superficie (feromona de alarma); microclima por profundidad (tecla **H**);

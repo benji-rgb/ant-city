@@ -51,7 +51,7 @@ func setup() -> void:
 func _process(_delta: float) -> void:
 	if _dirty:
 		_dirty = false
-		_texture.update(_image)
+		_texture.update(_image)   # at most once per frame, only after a dig
 
 func _draw() -> void:
 	if _texture:

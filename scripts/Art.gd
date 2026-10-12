@@ -25,3 +25,25 @@ static func sprite(name: String) -> Array:
 		return [b, false]
 	var f := tex("res://assets/sprites/%s.png" % name)
 	return [f, true]
+
+# ------------------------------------------------------------------ cheap shapes (web performance)
+## Godot's draw_circle emits a ~64-segment fan per call; with hundreds of ants that was ~20k
+## primitives per frame. A dot here is a 10-sided polygon (8 triangles) - same look at ant size.
+const DOT_SIDES := 10
+static var _unit_dot := PackedVector2Array()
+
+static func dot(ci: CanvasItem, p: Vector2, r: float, col: Color) -> void:
+	if not (r > 0.05) or not p.is_finite():
+		return
+	if r < 0.9:      # the polygon triangulator rejects sub-pixel polygons: a tiny square looks the same
+		ci.draw_rect(Rect2(p - Vector2(r, r), Vector2(r, r) * 2.0), col, true)
+		return
+	if _unit_dot.is_empty():
+		for i in DOT_SIDES:
+			var a := TAU * float(i) / float(DOT_SIDES)
+			_unit_dot.append(Vector2(cos(a), sin(a)))
+	var pts := PackedVector2Array()
+	pts.resize(DOT_SIDES)
+	for i in DOT_SIDES:
+		pts[i] = p + _unit_dot[i] * r
+	ci.draw_colored_polygon(pts, col)

@@ -35,7 +35,7 @@ TOOLS (keys 1-5)   Select / Dig / Nursery / Storage / Waste
   Chambers: click to plan, workers dig it out, then it works. R rotates. Right-click cancels a plan.
 
 KEYS   Space pause   - / + speed   P pheromone trails   H climate overlay
-       F5 save   F9 load   F1 this help   M mute   [ ] volume   Esc back to Select
+       K save   L load   Tab or ? this help   M mute   [ ] volume   Esc back to Select
 
 WHAT THE ANTS DO
   Young workers nurse, middle-aged dig and clean, older ones forage (any age forages when food runs low).
@@ -186,10 +186,10 @@ func _build() -> void:
 	climate_button.pressed.connect(func() -> void: climate_toggled.emit())
 	_set_icon(climate_button, "climate")
 	climate_button.tooltip_text = "Temperature / humidity overlay with brood comfort (H)."
-	var help_b := _button(bar, "Help [F1]", Vector2(454, 36), Vector2(104, 26), false)
+	var help_b := _button(bar, "Help [Tab]", Vector2(454, 36), Vector2(104, 26), false)
 	help_b.pressed.connect(func() -> void: help_toggled.emit())
 	_set_icon(help_b, "help")
-	help_b.tooltip_text = "Show / hide the help text (F1)."
+	help_b.tooltip_text = "Show / hide the help text (Tab or ?)."
 	soldier_button = _button(bar, "Soldiers: Auto", Vector2(6, 66), Vector2(150, 26), false)
 	soldier_button.pressed.connect(func() -> void: soldier_mode_pressed.emit())
 	_set_icon(soldier_button, "guard")
@@ -198,14 +198,14 @@ func _build() -> void:
 	threat_button.pressed.connect(func() -> void: threat_pressed.emit())
 	_set_icon(threat_button, "threat_spider")
 	threat_button.tooltip_text = "Surface predators: Off, Gentle or Normal."
-	var save_b := _button(bar, "Save [F5]", Vector2(314, 66), Vector2(120, 26), false)
+	var save_b := _button(bar, "Save [K]", Vector2(314, 66), Vector2(120, 26), false)
 	save_b.pressed.connect(func() -> void: save_pressed.emit())
 	_set_icon(save_b, "save")
-	save_b.tooltip_text = "Save the colony to user://antcity_save.json (F5)."
-	var load_b := _button(bar, "Load [F9]", Vector2(438, 66), Vector2(120, 26), false)
+	save_b.tooltip_text = "Save the colony to user://antcity_save.json (K)."
+	var load_b := _button(bar, "Load [L]", Vector2(438, 66), Vector2(120, 26), false)
 	load_b.pressed.connect(func() -> void: load_pressed.emit())
 	_set_icon(load_b, "load")
-	load_b.tooltip_text = "Load the saved colony (F9)."
+	load_b.tooltip_text = "Load the saved colony (L)."
 	hint_label = _label(bar, Vector2(8, 96), Vector2(552, 20), 11)
 	hint_label.clip_text = true
 
@@ -264,6 +264,7 @@ func show_speed(speed: float, paused: bool) -> void:
 
 func show_sound(audio: GameAudio) -> void:
 	sound_button.text = audio.label()
+	_set_icon(sound_button, "sound_off" if (audio.muted or not audio.enabled) else "sound_on", 18)
 	var col := Color(1.0, 0.45, 0.4) if (audio.muted or not audio.enabled) else Color(0.97, 0.94, 0.85)
 	sound_button.add_theme_color_override("font_color", col)
 	sound_button.add_theme_color_override("font_hover_color", col)
@@ -306,6 +307,12 @@ func refresh(colony: Colony, speed: float, paused: bool, info: String) -> void:
 		warn = "NO PROTEIN - no eggs, larvae go hungry!"
 	elif not colony.threats.is_empty():
 		warn = "DANGER on the surface!" + ("  Alarm raised." if colony.alarm_active() else "")
+	elif colony.intruder_count() > 0:
+		warn = "INTRUDER in the nest! Workers and soldiers defend."
+	elif colony.flooded_cells > 0:
+		warn = "Flooding in shallow tunnels - brood moved deeper."
+	elif colony.raining:
+		warn = "Rain - the soil is getting wet."
 	elif colony.hygiene < Config.HYGIENE_BAD:
 		warn = "Dirty nest - brood is falling ill!"
 	warn_icon.visible = warn != "" and warn_icon.texture != null

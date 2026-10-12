@@ -17,6 +17,10 @@ const SFX := {
 	"alarm": [-9.0, 6.0, 1, 0.0],
 	"threat_warning": [-9.0, 4.0, 1, 0.0],
 	"ui_click": [-6.0, 0.05, 2, 0.04],
+	"ant_death": [-10.0, 1.5, 1, 0.10],
+	"egg_hatch": [-12.0, 2.0, 1, 0.08],
+	"food_deposit": [-14.0, 1.2, 1, 0.10],
+	"chamber_complete": [-6.0, 2.0, 1, 0.0],
 }
 const AMBIENT_SURFACE_DB := -6.0
 const AMBIENT_NEST_DB := -4.0
@@ -69,10 +73,15 @@ func _exit_tree() -> void:
 func _stream(n: String) -> AudioStream:
 	if _streams.has(n):
 		return _streams[n]
-	var path := "%s%s.wav" % [DIR, n]
+	# prefer the small OGG (web download size), fall back to WAV
 	var s: AudioStream = null
-	if ResourceLoader.exists(path):
-		s = load(path) as AudioStream
+	var path := ""
+	for ext in ["ogg", "wav"]:
+		path = "%s%s.%s" % [DIR, n, ext]
+		if ResourceLoader.exists(path):
+			s = load(path) as AudioStream
+			if s != null:
+				break
 	if s == null:
 		missing.append(path)
 		push_warning("Audio: cannot load " + path)
@@ -81,14 +90,23 @@ func _stream(n: String) -> AudioStream:
 
 func _make_loop(n: String, db: float) -> AudioStreamPlayer:
 	var base := _stream(n)
-	if base == null or not (base is AudioStreamWAV):
+	if base == null:
 		return null
-	var s := (base as AudioStreamWAV).duplicate() as AudioStreamWAV
-	# WAVs do not loop by default in Godot 4: loop over the whole sample data
-	var bytes_per := 2 * (2 if s.stereo else 1)
-	s.loop_mode = AudioStreamWAV.LOOP_FORWARD
-	s.loop_begin = 0
-	s.loop_end = s.data.size() / bytes_per
+	var s: AudioStream
+	if base is AudioStreamOggVorbis:
+		var o := (base as AudioStreamOggVorbis).duplicate() as AudioStreamOggVorbis
+		o.loop = true
+		s = o
+	elif base is AudioStreamWAV:
+		var w := (base as AudioStreamWAV).duplicate() as AudioStreamWAV
+		# WAVs do not loop by default in Godot 4: loop over the whole sample data
+		var bytes_per := 2 * (2 if w.stereo else 1)
+		w.loop_mode = AudioStreamWAV.LOOP_FORWARD
+		w.loop_begin = 0
+		w.loop_end = w.data.size() / bytes_per
+		s = w
+	else:
+		return null
 	var p := AudioStreamPlayer.new()
 	p.stream = s
 	p.volume_db = db

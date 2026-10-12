@@ -58,6 +58,10 @@ func _run() -> void:
 		get_tree().quit(1 if _problems.size() > 0 else 0)
 		return
 	main.speed = float(args.get("speed", 1.0))
+	if args.has("perf"):
+		await _perf_run(float(args["perf"]))
+		get_tree().quit(0)
+		return
 	if args.has("phero"):
 		main.toggle_phero()
 	if args.has("climate"):
@@ -70,7 +74,7 @@ func _run() -> void:
 	var path := String(args["shot"])
 	var img := get_viewport().get_texture().get_image()
 	img.save_png(path)
-	print("screenshot saved: ", path, " ", img.get_size(), " t=", int(c.time), "s")
+	print("screenshot saved: ", path, " ", img.get_size(), " t=", int(c.time), "s field_updates=", main.overlay.field_updates)
 	if args.has("shot2"):
 		main.toggle_phero()
 		for i in 60:
@@ -96,6 +100,38 @@ func _setup_events() -> void:
 			Config.threat_level = maxi(1, Config.threat_level)
 			_colony().spawn_threat(kind)
 			print("[test] spawned a threat of kind ", kind, " at t=", int(_colony().time))])
+	if args.has("raidat"):
+		_events.append([float(args["raidat"]), func() -> void:
+			Config.threat_level = maxi(1, Config.threat_level)
+			var th := _colony().spawn_threat(Threat.Kind.RIVAL)
+			th.raider = true
+			print("[test] spawned a raiding rival scout at t=", int(_colony().time))])
+		_events.append([float(args["raidat"]) + 150.0, func() -> void:
+			var c := _colony()
+			print("[test] raid check: raids %d, food stolen %.1f, brood stolen %d, intruders killed %d, intruders now %d" % [c.raids, c.food_stolen, c.brood_stolen, c.intruders_killed, c.intruder_count()])
+			if c.raids < 1:
+				_problems.append("raider never entered the nest")])
+	if args.has("raintest"):
+		var t0 := float(args["raintest"])
+		_events.append([t0, func() -> void:
+			_colony().start_rain(1.0, 60.0)
+			print("[test] forced heavy rain at t=", int(_colony().time))])
+		_events.append([t0 + 55.0, func() -> void:
+			var c := _colony()
+			var wet := 0
+			for r in c.rooms:
+				if r.flooded:
+					wet += 1
+			print("[test] rain check: flooded cells %d, flood peak %.2f, flooded rooms %d, humidity row 10 %.2f" % [c.flooded_cells, c.flood_peak, wet, Climate.humidity(10)])
+			if c.flood_peak <= Config.FLOOD_WET or c.flooded_cells == 0:
+				_problems.append("heavy rain did not flood shallow tunnels")])
+		_events.append([t0 + 240.0, func() -> void:
+			var c := _colony()
+			print("[test] drain check: flooded cells %d, flood deaths %d, brood relocations %d" % [c.flooded_cells, c.flood_deaths, c.brood_relocated])
+			if c.flooded_cells > 0:
+				_problems.append("flood did not drain")])
+	if args.has("norain"):
+		Config.rain_enabled = false
 	if args.has("soldiermode"):
 		_events.append([1.0, func() -> void: _colony().soldier_mode = int(args["soldiermode"])])
 	if args.has("savetest"):
@@ -107,6 +143,8 @@ func _setup_events() -> void:
 			for f in _colony().foods:
 				f.active = false
 				f.respawn_t = 1e9])
+
+	_events.sort_custom(func(x: Array, y: Array) -> bool: return float(x[0]) < float(y[0]))
 
 func _dig_line(start: Vector2i, dir: Vector2i, n: int) -> void:
 	var c := _colony()
@@ -288,6 +326,76 @@ func _load_probe(path: String) -> void:
 	if JSON.stringify(d1) != JSON.stringify(d2):
 		_problems.append("to_dict not deterministic")
 
+## Rendering / memory probe: plays in real time for `secs` seconds and prints Performance monitors.
+## overlays=1 cycles the pheromone and climate overlays (worst case for draw load).
+func _perf_run(secs: float) -> void:
+	var c := _colony()
+	var t0 := Time.get_ticks_msec()
+	var next := 0.0
+	var frames := 0
+	var peak_prims := 0.0
+	var peak_calls := 0.0
+	var cycle := args.has("overlays")
+	var phase := -1
+	print("PERF start t=%d ants=%d speed=%.1f" % [int(c.time), c.ants.size(), main.speed])
+	if args.has("breakdown"):
+		await _perf_breakdown()
+	while true:
+		await get_tree().process_frame
+		frames += 1
+		var el := (Time.get_ticks_msec() - t0) / 1000.0
+		peak_prims = maxf(peak_prims, Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME))
+		peak_calls = maxf(peak_calls, Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME))
+		if cycle:
+			var ph := int(el / 20.0) % 3      # 0 none, 1 trails, 2 climate
+			if ph != phase:
+				phase = ph
+				main.overlay.show_phero = ph == 1
+				main.overlay.show_climate = ph == 2
+		if el >= next:
+			next += 10.0
+			print("PERF el=%d game=%d fps=%.0f ants=%d objs=%d nodes=%d res=%d orphans=%d calls=%d prims=%d objs_frame=%d tex_mb=%.1f vid_mb=%.1f mem_mb=%.1f peak_prims=%d peak_calls=%d" % [
+				int(el), int(c.time), Performance.get_monitor(Performance.TIME_FPS), c.ants.size(),
+				Performance.get_monitor(Performance.OBJECT_COUNT), Performance.get_monitor(Performance.OBJECT_NODE_COUNT),
+				Performance.get_monitor(Performance.OBJECT_RESOURCE_COUNT), Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT),
+				Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME), Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME),
+				Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME),
+				Performance.get_monitor(Performance.RENDER_TEXTURE_MEM_USED) / 1048576.0, Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0,
+				Performance.get_monitor(Performance.MEMORY_STATIC) / 1048576.0, peak_prims, peak_calls])
+			peak_prims = 0.0
+			peak_calls = 0.0
+		if el >= secs:
+			break
+	print("PERF done frames=%d" % frames)
+
+## Prints how many primitives / draw calls each top-level canvas node costs (hide it, measure the drop).
+func _perf_breakdown() -> void:
+	var nodes: Array[CanvasItem] = []
+	for n in main.find_children("*", "CanvasItem", true, false):
+		var ci := n as CanvasItem
+		if ci.get_parent() == main or ci.get_parent() == c_or_null() or ci.get_parent() is CanvasLayer:
+			nodes.append(ci)
+	for i in 4:
+		await get_tree().process_frame
+	var base_p := Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME)
+	var base_c := Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)
+	print("PERF breakdown base prims=%d calls=%d" % [base_p, base_c])
+	for ci in nodes:
+		if not ci.visible:
+			continue
+		ci.visible = false
+		for i in 4:
+			await get_tree().process_frame
+		var p := Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME)
+		var cc := Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)
+		print("PERF   %-28s prims %6d calls %4d" % [str(main.get_path_to(ci)), base_p - p, base_c - cc])
+		ci.visible = true
+		for i in 2:
+			await get_tree().process_frame
+
+func c_or_null() -> Node:
+	return _colony()
+
 func _report(dur: float) -> void:
 	var c := _colony()
 	if args.has("dbg"):
@@ -300,6 +408,17 @@ func _report(dur: float) -> void:
 	print("born %d, deaths %d %s, larvae starved %d, eggs laid %d" % [c.total_born, c.total_deaths, str(c.death_reasons), c.starved_larvae, c.total_laid])
 	print("dug cells %d, total food deposited %.0f, dropped on the floor %.0f (still lying: %d piles)" % [c.total_dug, c.total_foraged, c.food_dropped_total, c.dropped.size()])
 	print("brood carries %d (of which %d relocations to a better chamber), diseased brood %d | waste disposed %d (still lying %d, max %d), min hygiene %.2f, middens %s" % [c.brood_moved, c.brood_relocated, c.diseased_brood, c.waste_disposed, c.waste_items.size(), _max_waste, _min_hygiene, str(c.middens)])
+	var carried := 0
+	for a in c.ants:
+		carried += a.soil
+	print("v5: home trail %.1f, homing ok %d / fallback %d | soil dug %d = hauled %d + lost %d + carried %d | raids %d, food stolen %.1f, brood stolen %d, intruders killed %d | rain %d, flood peak %.2f, flood deaths %d" % [
+		c.home.total, c.homing_ok, c.homing_fallback, c.total_dug, c.soil_hauled, c.soil_lost, carried, c.raids, c.food_stolen, c.brood_stolen, c.intruders_killed, c.rain_count, c.flood_peak, c.flood_deaths])
+	if c.total_dug != c.soil_hauled + c.soil_lost + carried and not args.has("savetest"):
+		_problems.append("soil not conserved (dug %d, hauled %d, lost %d, carried %d)" % [c.total_dug, c.soil_hauled, c.soil_lost, carried])
+	if dur >= 600.0 and c.total_dug > 4 and c.soil_hauled == 0:
+		_problems.append("no soil was hauled to the surface")
+	if dur >= 600.0 and c.total_foraged > 40.0 and c.homing_ok == 0:
+		_problems.append("no forager ever homed along the home trail")
 	print("threats seen %d, killed %d | soldiers now %d (max %d) | mounds %s" % [c.threat_count, c.threats_killed, c.soldier_count(), _max_soldiers, str(c.mounds)])
 	var rq := ""
 	for r in c.rooms:
@@ -399,11 +518,17 @@ func _audio_test() -> void:
 	_expect(au.missing.is_empty(), "all one-shot streams loaded (missing: %s)" % [au.missing])
 	_expect(au.ambient_playing(), "both ambient loops are playing")
 	for p in [au._amb_surface, au._amb_nest]:
-		var s := p.stream as AudioStreamWAV
-		_expect(s.loop_mode == AudioStreamWAV.LOOP_FORWARD and s.loop_begin == 0 and s.loop_end == s.data.size() / 2 and s.loop_end > 44100 * 10, "ambient loop set to the full sample (%d frames, %.2f s)" % [s.loop_end, float(s.loop_end) / s.mix_rate])
+		if p.stream is AudioStreamOggVorbis:
+			var o := p.stream as AudioStreamOggVorbis
+			_expect(o.loop and o.get_length() > 10.0, "ambient OGG loops (%.2f s)" % o.get_length())
+		else:
+			var s := p.stream as AudioStreamWAV
+			_expect(s.loop_mode == AudioStreamWAV.LOOP_FORWARD and s.loop_begin == 0 and s.loop_end == s.data.size() / 2 and s.loop_end > 44100 * 10, "ambient loop set to the full sample (%d frames, %.2f s)" % [s.loop_end, float(s.loop_end) / s.mix_rate])
 	for n in GameAudio.SFX:
-		var st := au._stream(n) as AudioStreamWAV
-		_expect(st != null and st.get_length() > 0.03 and st.get_length() < 2.5 and st.loop_mode == AudioStreamWAV.LOOP_DISABLED, "%s loads as a one-shot (%.2f s)" % [n, st.get_length() if st != null else -1.0])
+		var st := au._stream(n)
+		var one_shot := (st is AudioStreamOggVorbis and not (st as AudioStreamOggVorbis).loop) \
+			or (st is AudioStreamWAV and (st as AudioStreamWAV).loop_mode == AudioStreamWAV.LOOP_DISABLED)
+		_expect(st != null and st.get_length() > 0.03 and st.get_length() < 2.5 and one_shot, "%s loads as a one-shot %s (%.2f s)" % [n, st.get_class() if st != null else "?", st.get_length() if st != null else -1.0])
 	# throttling: ten immediate dig requests start at most one
 	var d0 := int(au.played.get("dig", 0))
 	var ok := 0
@@ -461,9 +586,9 @@ func _ui_test() -> void:
 	_expect(main.ui.sound_button.text.begins_with("Sound") or main.ui.sound_button.text.begins_with("MUTED"), "HUD sound indicator shows '%s'" % main.ui.sound_button.text)
 	_expect(main.ui.help_panel.visible, "help overlay is shown at start")
 	await _shot("help")
-	await _key(KEY_F1)
-	_expect(not main.ui.help_panel.visible, "F1 hides the help overlay")
-	_expect(int(au.played.get("ui_click", 0)) >= 1, "UI click sound played for F1")
+	await _key(KEY_TAB)
+	_expect(not main.ui.help_panel.visible, "Tab hides the help overlay")
+	_expect(int(au.played.get("ui_click", 0)) >= 1, "UI click sound played for Tab")
 	# --- dig tool: drag a vertical line from the surface
 	await _key(KEY_2)
 	_expect(main.tool == 1, "key 2 selects Dig")
@@ -589,10 +714,10 @@ func _ui_test() -> void:
 	var f5 := SaveGame.DEFAULT_PATH
 	if FileAccess.file_exists(f5):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(f5))
-	await _key(KEY_F5)
+	await _key(KEY_K)
 	_expect(FileAccess.file_exists(f5), "F5 wrote the save file")
 	await get_tree().process_frame
-	await _key(KEY_F9)
+	await _key(KEY_L)
 	_expect(c.ants.size() == snap_ants and c.brood.size() == snap_brood and c.rooms.size() == snap_rooms and absf(c.time - snap_t) < 0.01, "F9 restored the saved colony (%d ants, %d brood, %d rooms)" % [c.ants.size(), c.brood.size(), c.rooms.size()])
 	await _key(KEY_SPACE)
 	for i in 120:
@@ -611,7 +736,7 @@ func _ui_test() -> void:
 	while c.time - t_spawn < 60.0 and not c.threats.is_empty():
 		await get_tree().process_frame
 		max_poly = maxi(max_poly, au.playing_count())
-		if not shot_done and c.time - t_spawn > 4.0 and not c.threats.is_empty():
+		if not shot_done and c.time - t_spawn > 1.5 and not c.threats.is_empty():
 			shot_done = true
 			await _key(KEY_P)
 			await _shot("threat")
