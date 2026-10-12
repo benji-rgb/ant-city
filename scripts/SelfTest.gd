@@ -402,6 +402,8 @@ func _perf_run(secs: float) -> void:
 		var el := (Time.get_ticks_msec() - t0) / 1000.0
 		peak_prims = maxf(peak_prims, Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME))
 		peak_calls = maxf(peak_calls, Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME))
+		if args.has("activity") and frames % 90 == 0:
+			_perf_activity(c)
 		if cycle:
 			var ph := int(el / 20.0) % 3      # 0 none, 1 trails, 2 climate
 			if ph != phase:
@@ -425,6 +427,18 @@ func _perf_run(secs: float) -> void:
 	print("PERF done frames=%d" % frames)
 
 ## Prints how many primitives / draw calls each top-level canvas node costs (hide it, measure the drop).
+## Keep the diggers busy (dig orders next to tunnels) and the UI changing, like a real player.
+func _perf_activity(c: Colony) -> void:
+	var placed := 0
+	for tries in 400:
+		if placed >= 6 or c.dig_tasks.size() > 30:
+			break
+		var cell := Vector2i(randi_range(Config.DIG_MIN_X, Config.DIG_MAX_X), randi_range(Config.FIRST_SOIL_ROW + 1, Config.DIG_MAX_Y))
+		if c.add_dig_order(cell):
+			placed += 1
+	main.set_tool(randi() % 5)
+	main.set_tool(0)
+
 func _perf_breakdown() -> void:
 	var nodes: Array[CanvasItem] = []
 	for n in main.find_children("*", "CanvasItem", true, false):

@@ -944,8 +944,10 @@ func _draw() -> void:
 				var foot := Vector2(lx + swing, side * 5.2)
 				segs[k] = hip; segs[k + 1] = knee; segs[k + 2] = knee; segs[k + 3] = foot
 				k += 4
-		draw_multiline(segs, halo, 1.6)
-		draw_multiline(segs, body, 0.9)
+		for j in range(0, 24, 2):
+			draw_line(segs[j], segs[j + 1], halo, 1.6)
+		for j in range(0, 24, 2):
+			draw_line(segs[j], segs[j + 1], body, 0.9)
 	var ant_s := s * ART_K if tex != null else s
 	draw_set_transform(Vector2(0, bob), face, Vector2(ant_s, ant_s))
 	# antennae twitch
@@ -1014,4 +1016,4 @@ func _draw() -> void:
 		draw_rect(Rect2(-6, 8, 12, 2), Color(0, 0, 0, 0.6))
 		draw_rect(Rect2(-6, 8, 12.0 * clampf(hp / Config.SOLDIER_HP, 0.0, 1.0), 2), Color(0.95, 0.25, 0.2))
 	if selected:
-		draw_arc(Vector2.ZERO, 11.0 * (1.0 if not is_queen else 1.6), 0.0, TAU, 24, Color(1, 1, 1, 0.9), 1.5)
+		Art.ring(self, Vector2.ZERO, 11.0 * (1.0 if not is_queen else 1.6), Color(1, 1, 1, 0.9), 1.5, 20)

@@ -35,7 +35,7 @@ TOOLS (keys 1-5)   Select / Dig / Nursery / Storage / Waste
   Chambers: click to plan, workers dig it out, then it works. R rotates. Right-click cancels a plan.
 
 KEYS   Space pause   - / + speed   P pheromone trails   H climate overlay
-       K save   L load   Tab or ? this help   M mute   [ ] volume   Esc back to Select
+       K save   L load   Tab or ? this help   M mute   [ ] volume   F3 debug info   Esc back to Select
 
 WHAT THE ANTS DO
   Young workers nurse, middle-aged dig and clean, older ones forage (any age forages when food runs low).
@@ -70,6 +70,8 @@ var threat_button: Button
 var save_button: Button
 var help_button: Button
 var tutorial_button: Button
+var debug_label: Label
+var _debug_t := 0.0
 signal tutorial_pressed()
 var _help_t := 0.0
 var _last_log := ""
@@ -251,6 +253,16 @@ func _build() -> void:
 	tutorial_button.pressed.connect(func() -> void: tutorial_pressed.emit())
 	_set_icon(tutorial_button, "help", 18)
 	add_child(tutorial_button)
+	debug_label = Label.new()
+	debug_label.position = Vector2(8, 104)
+	debug_label.size = Vector2(360, 60)
+	debug_label.add_theme_font_size_override("font_size", 11)
+	debug_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(debug_label)
+	debug_label.add_theme_color_override("font_color", Color(0.6, 1.0, 0.6))
+	debug_label.add_theme_color_override("font_outline_color", Color(0, 0, 0))
+	debug_label.add_theme_constant_override("outline_size", 3)
+	debug_label.visible = false
 
 	help_panel = _panel(Vector2(190, 140), Vector2(900, 470), 0.9)
 	help_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -360,3 +372,22 @@ func _log_bbcode(line: String) -> String:
 	if tex != null:
 		return "[img=%dx%d]%s%s.png[/img] %s" % [LOG_ICON_PX, LOG_ICON_PX, ICON_DIR, ic, line]
 	return "      " + line   # keep text aligned with iconned lines
+
+# ------------------------------------------------------------------ F3 debug readout (v7)
+func toggle_debug() -> void:
+	debug_label.visible = not debug_label.visible
+	_debug_t = 0.0
+
+func update_debug(delta: float) -> void:
+	if debug_label == null or not debug_label.visible:
+		return
+	_debug_t -= delta
+	if _debug_t > 0.0:
+		return
+	_debug_t = 0.5
+	debug_label.text = "FPS %d   draw calls %d   prims %d\nVRAM %.1f MB  (textures %.1f MB, buffers %.1f MB)\nobjects %d  nodes %d  resources %d" % [
+		Engine.get_frames_per_second(),
+		Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME), Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME),
+		Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0, Performance.get_monitor(Performance.RENDER_TEXTURE_MEM_USED) / 1048576.0,
+		Performance.get_monitor(Performance.RENDER_BUFFER_MEM_USED) / 1048576.0,
+		Performance.get_monitor(Performance.OBJECT_COUNT), Performance.get_monitor(Performance.OBJECT_NODE_COUNT), Performance.get_monitor(Performance.OBJECT_RESOURCE_COUNT)]

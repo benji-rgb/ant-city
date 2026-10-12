@@ -276,8 +276,8 @@ func _draw() -> void:
 		for i in 4:
 			var ox := (-4.0 + i * 2.8) * fx
 			var sw := legs * 2.0 * (1.0 if i % 2 == 0 else -1.0)
-			draw_polyline(PackedVector2Array([Vector2(ox * 0.6, 0), Vector2(ox - 5.0 + sw, -6.0), Vector2(ox - 8.0 + sw, 4.0)]), body, 1.3)
-			draw_polyline(PackedVector2Array([Vector2(ox * 0.6, 0), Vector2(ox + 6.0 - sw, -6.0), Vector2(ox + 9.0 - sw, 4.0)]), body, 1.3)
+			Art.lines(self, PackedVector2Array([Vector2(ox * 0.6, 0), Vector2(ox - 5.0 + sw, -6.0), Vector2(ox - 8.0 + sw, 4.0)]), body, 1.3)
+			Art.lines(self, PackedVector2Array([Vector2(ox * 0.6, 0), Vector2(ox + 6.0 - sw, -6.0), Vector2(ox + 9.0 - sw, 4.0)]), body, 1.3)
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2(0.5 * fx, 0.5))
 		draw_texture(btex, -btex.get_size() * 0.5)
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
@@ -297,8 +297,8 @@ func _draw() -> void:
 		for i in 4:
 			var ox := -4.0 + i * 2.8
 			var sw := legs * 2.0 * (1.0 if i % 2 == 0 else -1.0)
-			draw_polyline(PackedVector2Array([Vector2(ox * 0.6, 0), Vector2(ox - 5.0 + sw, -6.0), Vector2(ox - 8.0 + sw, 4.0)]), body, 1.3)
-			draw_polyline(PackedVector2Array([Vector2(ox * 0.6, 0), Vector2(ox + 6.0 - sw, -6.0), Vector2(ox + 9.0 - sw, 4.0)]), body, 1.3)
+			Art.lines(self, PackedVector2Array([Vector2(ox * 0.6, 0), Vector2(ox - 5.0 + sw, -6.0), Vector2(ox - 8.0 + sw, 4.0)]), body, 1.3)
+			Art.lines(self, PackedVector2Array([Vector2(ox * 0.6, 0), Vector2(ox + 6.0 - sw, -6.0), Vector2(ox + 9.0 - sw, 4.0)]), body, 1.3)
 		Art.dot(self, Vector2(-3.5, 0), 5.5, body)
 		Art.dot(self, Vector2(3.5, -0.5), 3.4, body.lightened(0.1))
 		Art.dot(self, Vector2(5.0, -1.5), 0.9, Color(1, 0.2, 0.2))

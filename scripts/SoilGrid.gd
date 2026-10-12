@@ -18,7 +18,15 @@ var walk_idx := PackedInt32Array()     # indices of every walkable cell
 var astar := AStarGrid2D.new()
 
 var _image: Image
-var _texture: ImageTexture
+var _texture: ImageTexture      # unused since v7 (kept for old references)
+# v7: the 1280x720 soil picture is split into small chunk textures; a dig re-uploads only the
+# chunk(s) it touched, at most UPLOAD_HZ times per second (v6 re-uploaded 3.6 MB per dig frame).
+const CHUNK := Vector2i(160, 144)
+const UPLOAD_HZ := 8.0
+var _chunks: Array[ImageTexture] = []
+var _chunk_dirty := {}
+var _upload_t := 0.0
+var chunk_uploads := 0          # diagnostics
 var _dirty := false
 var _soil_tiles: Array = []            # [band][variant] -> Image
 var _tunnel_tiles: Array[Image] = []
@@ -45,17 +53,51 @@ func setup() -> void:
 		for x in W:
 			_paint_cell(Vector2i(x, y))
 	_paint_decor()
-	_texture = ImageTexture.create_from_image(_image)
+	_make_chunks()
 	queue_redraw()
 
-func _process(_delta: float) -> void:
-	if _dirty:
-		_dirty = false
-		_texture.update(_image)   # at most once per frame, only after a dig
+func _chunk_cols() -> int:
+	return ceili(float(W * C) / CHUNK.x)
+
+func _chunk_rows() -> int:
+	return ceili(float(H * C) / CHUNK.y)
+
+@warning_ignore("integer_division")
+func _chunk_rect(i: int) -> Rect2i:
+	var cx := i % _chunk_cols()
+	var cy := i / _chunk_cols()
+	var r := Rect2i(cx * CHUNK.x, cy * CHUNK.y, CHUNK.x, CHUNK.y)
+	return r.intersection(Rect2i(0, 0, W * C, H * C))
+
+## Chunk textures are created ONCE (same size/format forever); later only update() is used.
+func _make_chunks() -> void:
+	if _chunks.is_empty():
+		for i in _chunk_cols() * _chunk_rows():
+			_chunks.append(ImageTexture.create_from_image(_image.get_region(_chunk_rect(i))))
+	else:
+		for i in _chunks.size():
+			_chunk_dirty[i] = true
+
+func _mark_px_dirty(px: Rect2i) -> void:
+	var c0 := px.position / CHUNK
+	var c1 := (px.end - Vector2i.ONE) / CHUNK
+	for cy in range(maxi(c0.y, 0), mini(c1.y, _chunk_rows() - 1) + 1):
+		for cx in range(maxi(c0.x, 0), mini(c1.x, _chunk_cols() - 1) + 1):
+			_chunk_dirty[cy * _chunk_cols() + cx] = true
+
+func _process(delta: float) -> void:
+	_upload_t -= delta
+	if _chunk_dirty.is_empty() or _upload_t > 0.0:
+		return
+	_upload_t = 1.0 / UPLOAD_HZ
+	for i: int in _chunk_dirty:
+		_chunks[i].update(_image.get_region(_chunk_rect(i)))
+		chunk_uploads += 1
+	_chunk_dirty.clear()
 
 func _draw() -> void:
-	if _texture:
-		draw_texture(_texture, Vector2.ZERO)
+	for i in _chunks.size():
+		draw_texture(_chunks[i], Vector2(_chunk_rect(i).position))
 
 # ------------------------------------------------------------------ queries
 static func in_bounds(c: Vector2i) -> bool:
@@ -121,7 +163,7 @@ func dig(c: Vector2i) -> bool:
 	for d in N4:
 		if in_bounds(c + d):
 			_paint_cell(c + d)
-	_dirty = true
+	_mark_px_dirty(Rect2i((c - Vector2i.ONE) * C, Vector2i(3, 3) * C))
 	cell_dug.emit(c)
 	return true
 
@@ -134,7 +176,7 @@ func load_cells(data: PackedByteArray) -> void:
 			astar.set_point_solid(Vector2i(x, y), walk[y * W + x] == 0)
 			_paint_cell(Vector2i(x, y))
 	_paint_decor()
-	_dirty = true
+	_make_chunks()
 
 # ------------------------------------------------------------------ setup helpers
 func _carve_rect(r: Rect2i) -> void:

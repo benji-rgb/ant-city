@@ -1,4 +1,4 @@
-# Ant City (v6) — Godot 4 side-view ant colony simulator
+# Ant City (v7) — Godot 4 side-view ant colony simulator
 
 A cross-section ant nest. You don't control individual ants: you designate **where to dig** and **which
 chambers to build**, and the colony (queen, workers, soldiers, brood) organises itself with pheromone trails,
@@ -8,10 +8,10 @@ Targets **Godot 4.3** (GL Compatibility renderer, 1280x720). Nothing here needs 
 
 ## How to run
 1. Install Godot 4.3 or newer (godotengine.org).
-2. Import / open the `ant_city_v6` folder (or `project.godot`) and press **F5** in the editor.
+2. Import / open the `ant_city_v7` folder (or `project.godot`) and press **F5** in the editor.
    - Web build: https://benji-rgb.github.io/ant-city/ (keys are browser-safe: K save, L load, Tab / ? help)
-   - CLI: `godot --path ant_city_v6`
-   - Headless smoke test: `godot --headless --path ant_city_v6 --quit-after 300`
+   - CLI: `godot --path ant_city_v7`
+   - Headless smoke test: `godot --headless --path ant_city_v7 --quit-after 300`
 
 ## Controls
 | Input | Action |
@@ -38,6 +38,31 @@ Targets **Godot 4.3** (GL Compatibility renderer, 1280x720). Nothing here needs 
 Ant colours (marker above the ant + abdomen): pink = Nurse, orange = Dig, green = Forage, olive = Clean,
 red = Soldier (guard), grey = Idle. Carried items: yellow dot = sugar, red-pink dot = protein, pale dot = larva
 food or brood, brown dot = refuse. A red dot over a larva = it is hungry. An "x" = something died, "!" = an ant saw a predator.
+
+## New in v7 - "WebGL context lost" investigation
+Measured in headless Chrome (ANGLE/SwiftShader, `--force-gpu-mem-available-mb=256`) with a debug page that wraps the WebGL calls
+(`glprobe.js`: counts createTexture/createBuffer/createFramebuffer/texImage2D/bufferData), 4x speed, overlays cycling, digging every 3 s, 240 s:
+
+| per 240 s | v6 | v7 |
+|---|---|---|
+| GL buffers created (and deleted) | 377,799 (~1,570/s) | 11,527 (~48/s) |
+| live GL buffers (start -> end) | 193 -> 314 (growing) | 85 -> 91 |
+| texture upload volume (texImage2D) | 663 MB | 183 MB (most of it at start-up) |
+| live textures | 133 flat | 173 flat |
+| framebuffers created / live | ~1 per frame / 3 | same (engine internal) |
+
+Findings and fixes:
+1. **Buffer churn (main suspect).** In Godot 4.3 Compatibility, every `draw_circle` / `draw_colored_polygon` / `draw_polyline` /
+   `draw_multiline` / `draw_arc` creates its own GL vertex buffers each redraw. Ants, brood, effects and mounds redraw every frame,
+   so v6 created and destroyed ~1,500 GL buffers per second, and the number of live buffers kept creeping up. v7 uses only batched
+   rects, lines and textured quads (`Art.dot` / `Art.lines` / `Art.ring` / `Art.hill`).
+2. **Texture re-uploads.** `ImageTexture.update()` in 4.3 calls `texImage2D` (re-allocates), never `texSubImage2D`. v6 re-uploaded the whole
+   1280x720 soil (3.6 MB) on every dig frame; v7 splits it into 40 fixed 160x144 chunks, uploads only touched chunks, at most 8x/s.
+3. **The v5/v6 context-lost banner never worked**: its JS had a quoting bug (SyntaxError), and Godot's own handler shows a blocking `alert()`.
+   v7 catches `webglcontextlost` in the capture phase, suppresses Godot's alert, suspends audio, lets the still-running game loop autosave,
+   reloads with `?resume=1` and restores the autosave (verified with `WEBGL_lose_context`).
+4. Mitigations: autosave every 60 s and when the tab is hidden; HiDPI canvas off (`display/window/dpi/allow_hidpi=false`), 2D MSAA off,
+   ETC2/ASTC import off, 60 fps cap on the web; **F3** shows FPS, draw calls, primitives, VRAM / texture / buffer memory and object counts.
 
 ## New in v6
 * **Claustral founding start**: a new game is just a short entrance shaft and a small queen chamber with the queen,

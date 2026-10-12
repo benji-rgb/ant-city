@@ -1,4 +1,11 @@
-# Ant City — TODO / roadmap (after v6)
+# Ant City — TODO / roadmap (after v7)
+
+## Done in v7
+- [x] WebGL audit: polygon buffer churn removed, soil uploads chunked, broken context-lost handler fixed + auto-reload/resume, autosave 60 s + tab hide, F3 readout, HiDPI/MSAA off.
+
+## Still open after v7
+- [ ] Context loss was never reproduced on a real GPU here; confirm on the user's machine (F3 numbers, chrome://gpu).
+- [ ] Godot creates/deletes ~1 framebuffer per frame internally (engine, not game code); upgrading to Godot 4.4+ may help.
 
 ## Done in v6
 - [x] Founding start (queen chamber only, nanitic workers, reserve in the queen chamber); queen chamber fallback store / nursery.

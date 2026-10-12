@@ -294,16 +294,14 @@ func _draw_mounds() -> void:
 		var cx := (ex + 2.6) * C
 		var w := minf(8.0 + 3.0 * sqrt(n), 46.0)
 		var h := minf(2.0 + 1.5 * sqrt(n), 15.0)
-		draw_colored_polygon(PackedVector2Array([Vector2(cx - w, ground + 1), Vector2(cx - w * 0.3, ground - h * 0.85),
-			Vector2(cx, ground - h), Vector2(cx + w * 0.4, ground - h * 0.8), Vector2(cx + w, ground + 1)]), Color(0.47, 0.33, 0.21))
-		draw_colored_polygon(PackedVector2Array([Vector2(cx - w * 0.5, ground + 1), Vector2(cx - w * 0.1, ground - h * 0.6),
-			Vector2(cx + w * 0.3, ground - h * 0.6), Vector2(cx + w * 0.6, ground + 1)]), Color(0.56, 0.40, 0.26))
+		Art.hill(self, cx, ground, w, h, Color(0.47, 0.33, 0.21))
+		Art.hill(self, cx + w * 0.05, ground, w * 0.55, h * 0.6, Color(0.56, 0.40, 0.26))
 	for ex: int in colony.middens.keys():
 		var n := float(colony.middens[ex])
 		var cx := (ex - 3.2) * C
 		var w := minf(6.0 + 2.2 * sqrt(n), 34.0)
 		var h := minf(1.5 + 1.1 * sqrt(n), 11.0)
-		draw_colored_polygon(PackedVector2Array([Vector2(cx - w, ground + 1), Vector2(cx - w * 0.2, ground - h), Vector2(cx + w * 0.5, ground - h * 0.7), Vector2(cx + w, ground + 1)]), Color(0.36, 0.34, 0.22))
+		Art.hill(self, cx, ground, w, h, Color(0.36, 0.34, 0.22))
 		Art.dot(self, Vector2(cx - w * 0.3, ground - h * 0.4), 1.4, Color(0.27, 0.36, 0.17))
 		Art.dot(self, Vector2(cx + w * 0.3, ground - h * 0.3), 1.2, Color(0.25, 0.22, 0.18))
 
@@ -399,7 +397,7 @@ func _draw_fx() -> void:
 			"alert":
 				_text(p + Vector2(-2, -4.0 * sin(k * PI)), "!", 13, Color(1.0, 0.25, 0.2, 1.0 - k * 0.6))
 			"egg", "pop":
-				draw_arc(p, 3.0 + 9.0 * k, 0.0, TAU, 14, Color(1.0, 0.95, 0.6, 0.9 * (1.0 - k)), 1.5)
+				Art.ring(self, p, 3.0 + 9.0 * k, Color(1.0, 0.95, 0.6, 0.9 * (1.0 - k)), 1.5, 12)
 			"spark":
 				var a2 := p.x * 3.0
 				draw_line(p, p + Vector2(cos(a2), sin(a2)) * 8.0 * k, Color(1.0, 0.9, 0.5, 1.0 - k), 1.5)

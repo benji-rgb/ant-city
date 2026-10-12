@@ -3,7 +3,7 @@ extends Node2D
 
 enum Tool { SELECT, DIG, NURSERY, STORAGE, WASTE }
 
-const HELP := "Keys: 1-5 tools | Space pause | -/+ speed | P trails | H climate | K save | L load | Tab or ? help | M mute | [ ] volume | R rotate chamber\nLeft-drag with Dig paints orders, right-drag cancels. Click an ant, larva or chamber to inspect it."
+const HELP := "Keys: 1-5 tools | Space pause | -/+ speed | P trails | H climate | K save | L load | Tab or ? help | M mute | [ ] volume | F3 debug | R rotate chamber\nLeft-drag with Dig paints orders, right-drag cancels. Click an ant, larva or chamber to inspect it."
 const ROOM_TOOLS := {Tool.NURSERY: Room.Type.NURSERY, Tool.STORAGE: Room.Type.FOOD_STORAGE, Tool.WASTE: Room.Type.WASTE}
 
 var grid: SoilGrid
@@ -41,29 +41,73 @@ var _selftest: Node = null
 var _mouse_world := Vector2(-1000, -1000)   # last known mouse position in world coordinates
 var _mouse_seen := false
 
-## v5 web hardening: cap the frame rate (120/144 Hz screens otherwise draw 2x as often), autosave
-## every AUTOSAVE_S of play, and if the browser drops the WebGL context show a clear message (Godot
-## 4.3 cannot recover the context; reloading and pressing L restores the autosave).
-const AUTOSAVE_S := 120.0
+## Web hardening (v5, extended in v7): 60 fps cap, autosave every AUTOSAVE_S and when the tab is
+## hidden, and a graceful 'webglcontextlost' path. The user saw sound keep playing after the loss, so
+## the main loop survives: JS only raises a flag, Godot then autosaves (fresh state), mutes, and the
+## page reloads with ?resume=1 which loads the autosave on start.
+const AUTOSAVE_S := 60.0
 var _autosave_t := AUTOSAVE_S
+var _web := false
+var _web_poll_t := 0.0
+var _lost_handled := false
+var resume_requested := false
 
 func _web_setup() -> void:
 	if not OS.has_feature("web"):
 		return
+	_web = true
 	Engine.max_fps = 60
 	JavaScriptBridge.eval("""
 (function(){
+  window.antcity = window.antcity || {lost: false, hidden: false, lostAt: 0};
   var c = document.getElementById('canvas'); if (!c || c._antcityHooked) return; c._antcityHooked = true;
-  c.addEventListener('webglcontextlost', function(e){
+  // capture phase on window runs BEFORE Godot's own canvas handler, which would block everything
+  // with alert('WebGL context lost, please reload the page'); stop it and handle the loss ourselves
+  window.addEventListener('webglcontextlost', function(e){
+    if (e.target !== c) return;
+    e.stopImmediatePropagation();
+    if (window.antcity.lost) return;
+    window.antcity.lost = true; window.antcity.lostAt = Date.now();
+    console.log('ANTCITY webglcontextlost');
+    try { var A = window.GodotAudio || (window.Module && Module.GodotAudio); if (A && A.ctx) A.ctx.suspend(); } catch (err) {}
     var d = document.createElement('div');
-    d.style.cssText = 'position:fixed;left:0;top:0;right:0;padding:16px;background:#3a1f12;color:#fff;font:16px sans-serif;z-index:99;text-align:center';
-    d.innerHTML = 'The browser stopped the game graphics (WebGL context lost). Your colony is autosaved every 2 minutes: <b>reload the page and press L</b> to continue. <button onclick="location.reload()">Reload</button>';
+    d.id = 'antcity-lost';
+    d.style.cssText = 'position:fixed;left:0;top:0;right:0;padding:18px;background:#3a1f12;color:#fff;font:16px sans-serif;z-index:99;text-align:center';
+    d.innerHTML = 'Oops - the browser stopped the game graphics (WebGL context lost). Saving your colony and reloading in a few seconds... <button onclick="location.search=&#39;?resume=1&#39;">Reload now</button>';
     document.body.appendChild(d);
-  }, false);
+    // fallback reload even if the game loop never answers
+    setTimeout(function(){ location.search = '?resume=1'; }, 6000);
+  }, true);
+  document.addEventListener('visibilitychange', function(){ if (document.hidden) window.antcity.hidden = true; });
 })();
 """, true)
+	var q := str(JavaScriptBridge.eval("window.location.search", true))
+	resume_requested = q.contains("resume=1")
+
+## Polled ~4x per second on the web.
+func _web_poll(delta: float) -> void:
+	if not _web:
+		return
+	_web_poll_t -= delta
+	if _web_poll_t > 0.0:
+		return
+	_web_poll_t = 0.25
+	var lost := bool(JavaScriptBridge.eval("window.antcity && window.antcity.lost", true))
+	if lost and not _lost_handled:
+		_lost_handled = true
+		print("ANTCITY context lost seen by Godot at t=", int(colony.time), " - autosaving")
+		AudioServer.set_bus_mute(0, true)
+		SaveGame.save(colony, SaveGame.AUTO_PATH)
+		paused = true
+		# give IDBFS a moment to sync, then reload and resume from the autosave
+		JavaScriptBridge.eval("setTimeout(function(){ location.search = '?resume=1'; }, 1500);", true)
+	if bool(JavaScriptBridge.eval("window.antcity && window.antcity.hidden", true)):
+		JavaScriptBridge.eval("window.antcity.hidden = false;", true)
+		if _selftest == null:
+			SaveGame.save(colony, SaveGame.AUTO_PATH)
 
 func _step_autosave(delta: float) -> void:
+	_web_poll(delta)
 	if _selftest != null or paused:
 		return
 	_autosave_t -= delta
@@ -140,7 +184,13 @@ func _ready() -> void:
 	ui.tutorial_pressed.connect(func() -> void:
 		_click()
 		tutorial.start())
-	if args.has("tutorial") or (not testing and not Config.classic_start and not Tutorial.is_done()):
+	if resume_requested and FileAccess.file_exists(SaveGame.AUTO_PATH):
+		var err := SaveGame.load_file(colony, SaveGame.AUTO_PATH)
+		print("ANTCITY resume from autosave: ", "ok" if err == "" else err, " t=", int(colony.time))
+		colony.log_event("Graphics were reset by the browser - your colony was restored from the autosave." if err == "" else "Could not restore the autosave: " + err, "load")
+		ui.show_modes(colony)
+		JavaScriptBridge.eval("history.replaceState(null, '', location.pathname);", true)
+	elif args.has("tutorial") or (not testing and not Config.classic_start and not Tutorial.is_done()):
 		tutorial.start.call_deferred()
 	if args.has("selftest") or args.has("shot") or args.has("audiotest") or args.has("perf"):
 		var st := load("res://scripts/SelfTest.gd").new() as Node
@@ -179,6 +229,7 @@ func _process(delta: float) -> void:
 			_accum = 0.0
 	_update_cursor()
 	_step_autosave(delta)
+	ui.update_debug(delta)
 	if _mouse_seen:
 		# ambience follows what the player looks at: surface above the ground line, nest below
 		var gy := float(Config.SURFACE_ROW * Config.CELL)
@@ -283,6 +334,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_P: toggle_phero()
 			KEY_H: toggle_climate()
 			KEY_M: toggle_mute()
+			KEY_F3: ui.toggle_debug()
 			KEY_BRACKETLEFT: change_volume(-0.1)
 			KEY_BRACKETRIGHT: change_volume(0.1)
 			KEY_K: save_game()      # web-safe (F5 reloads the page in a browser)
